@@ -1,0 +1,26 @@
+# Glossary
+
+- **Control plane:** APIs and durable decisions about job intent, status, admission and policy.
+- **Execution plane:** Running workloads and returning execution results.
+- **Job:** One logical training request, stable across retries.
+- **Attempt:** One concrete execution of a logical job.
+- **Lease:** Time-limited exclusive claim over queued work used by a controller.
+- **Reconciliation:** Repair of differences between desired job state and actual runtime state after delays/failures.
+- **Idempotency:** Repeating the same logical request does not create an unintended extra effect.
+- **At-least-once:** A dispatch may occur more than once; duplicates must be managed.
+- **Checkpoint:** Saved train state, including model/optimizer/epoch as needed for meaningful resume.
+- **Artifact:** Trained model, metrics, metadata or checkpoint stored outside the transient worker.
+- **Ray Core:** Distributed Python tasks and actors.
+- **Ray Train:** Distributed model training built on Ray.
+- **Ray Serve:** Model/application serving, scaling and deployment on Ray.
+- **KubeRay:** Kubernetes operator/configuration components for Ray clusters/jobs/services.
+- **Flyte:** Workflow orchestration system; distinct from Ray's execution abstractions.
+- **DDP:** Distributed Data Parallel training with model replicas and gradient synchronization.
+- **FSDP:** Fully Sharded Data Parallel, sharding model state to reduce per-device memory.
+- **MIG:** NVIDIA Multi-Instance GPU partitioning on compatible hardware.
+- **GPU device plugin:** Kubernetes mechanism to advertise/manage GPU extended resources.
+- **Autoscaling layers:** Serving replicas, Ray worker Pods and Kubernetes nodes are different control loops.
+- **GPU-hours:** Allocation-time unit; not automatically measured compute usage.
+- **SLO:** Target for an observable reliability/latency property, not a guarantee.
+- **P0/P1/P2:** Core evidence / production realism / stretch goal.
+- **TESTED-CPU / TESTED-GPU / SIMULATED / DESIGN-ONLY:** Claims-evidence labeling scheme.
