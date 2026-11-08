@@ -11,7 +11,7 @@
 
 ## System design scorecard
 
-Each criterion is 0–4, total max 24. Score is an **internal preparation heuristic**, not Revolut's hiring criteria.
+Each criterion is 0–4, total max 24. Score is an **internal preparation heuristic** for this project.
 
 | Criterion | 0 | 2 | 4 |
 |---|---|---|---|

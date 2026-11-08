@@ -1,6 +1,6 @@
-# Revolut vacancy: requirement-to-evidence matrix
+# AI Platform Engineer: requirement-to-evidence matrix
 
-Source: https://www.revolut.com/careers/position/084ef8e5-126c-4d90-9aa6-9ad60e78db48/
+Target role: **AI Platform Engineer — Serverless Training and Inference**. This vendor-neutral matrix defines the capstone's preparation goals.
 
 | Job requirement | Priority | Concrete proof in project | How to defend it |
 |---|---|---|---|
