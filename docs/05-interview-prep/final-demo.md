@@ -11,7 +11,7 @@
 7. Send simultaneous inference requests, show latency/replica behavior.
 8. Present one GPU resource-request manifest (and real GPU execution if available).
 9. If completed and tested, show P1 tenant quota denial and queue/cost metrics; otherwise state the deferred scope or discuss it as design-only.
-10. Explain one thing that would break at Revolut scale and a clear next architecture step.
+10. Explain one thing that would break at production scale and a clear next architecture step.
 
 The core final demo requires the CPU path and KubeRay/GPU design evidence (`MLP-015–016`). SDK and P1 live demonstrations are optional. Full Gate C remains incomplete if its P1 criteria are deferred; this does not block Gate D.
 

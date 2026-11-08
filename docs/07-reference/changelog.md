@@ -1,5 +1,9 @@
 # Documentation change log
 
+## 2026-11-08 — v0.3 Vendor-neutral interview guidance
+
+- Made the target role, interview scorecard and scaling prompts vendor-neutral; removed the company-specific vacancy link.
+
 ## 2026-11-08 — v0.2 Contract review and implementation readiness
 
 - Kept the eight job states and added queued cancellation, pre-running failure/retry and missed-running-observation success paths. Distinguished pure graph checks from persistent execution guards; MLP-001 now covers all 64 state pairs.
