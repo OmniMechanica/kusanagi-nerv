@@ -1,5 +1,11 @@
 # Documentation change log
 
+## 2026-11-08 — v0.4 Python bootstrap
+
+- Added a packaged `src/` layout, pinned Python interpreter, uv lockfile, pytest/Ruff configuration and initial CI workflow.
+- Documented setup/check commands and a passing package-installation smoke test; left the lifecycle implementation and domain tests as developer exercises.
+- Moved MLP-001 to In progress with local verification evidence. No platform feature or completed lifecycle implementation is claimed.
+
 ## 2026-11-08 — v0.3 Vendor-neutral interview guidance
 
 - Made the target role, interview scorecard and scaling prompts vendor-neutral; removed the company-specific vacancy link.

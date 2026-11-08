@@ -2,6 +2,8 @@
 
 **Scope:** preparation within MLP-001, not a new ticket. Allow an additional 30–60 minutes, separate from its 60–90-minute domain exercise. This page is an instruction, not evidence that setup has already run.
 
+**Current status:** bootstrap has been implemented and verified locally. Exact versions and observed results are recorded in [progress](../03-planning/progress.md#2026-11-08--mlp-001--repository-bootstrap). The lifecycle module and its unit-test file remain exercise placeholders; the passing test covers package installation only.
+
 ## Starting point
 
 The repository inspection on 2026-11-08 found the root README, LICENSE and this documentation; no application starter, `pyproject.toml`, `src/` or `tests/` was present. Inspect again before creating files. If a starter has since been imported, preserve its package and tests and follow [repository integration](repository-integration.md).
@@ -28,7 +30,7 @@ The repository inspection on 2026-11-08 found the root README, LICENSE and this 
 5. Configure pytest to collect `tests/`; configure Ruff's Python target consistently with the interpreter baseline. Ignore `.venv/`, Python/test/lint caches and build artifacts. Keep `uv.lock` under version control when the implementation is committed.
 6. Add a minimal CI check with the same Python/uv versions, locked dependency installation, lint, formatting and unit tests. Extend it with service integration tests as those services arrive; MLP-019 reviews and hardens that pipeline.
 
-Target layout (files to create, not existing implementation):
+Bootstrap layout:
 
 ```text
 pyproject.toml
@@ -39,6 +41,8 @@ src/kusanagi_nerv/__init__.py
 src/kusanagi_nerv/domain/__init__.py
 src/kusanagi_nerv/domain/job_lifecycle.py
 tests/unit/test_job_lifecycle.py
+tests/smoke/test_package_installation.py
+.github/workflows/ci.yml
 ```
 
 ## Verification and handoff
@@ -54,6 +58,6 @@ uv run ruff check src tests
 uv run ruff format --check src tests
 ```
 
-Do not count zero collected tests as a passing exercise. A workflow file is configuration evidence; claim a successful CI run only after observing one. Record commands, interpreter/tool versions and results in [progress](../03-planning/progress.md); retain `Planned` until work actually starts and mark MLP-001 Done only after its acceptance criteria pass.
+Do not count zero collected domain tests or a passing package smoke test as completion of MLP-001. A workflow file is configuration evidence; claim a successful CI run only after observing one. Record commands, interpreter/tool versions and results in [progress](../03-planning/progress.md); mark MLP-001 Done only after its acceptance criteria pass.
 
 Continue with [MLP-001](../03-planning/tasks/MLP-001.md). No database, Ray cluster, Kubernetes or GPU is required for this preparation.

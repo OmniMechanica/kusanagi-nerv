@@ -6,7 +6,7 @@
 **Product:** Custom Self-Service Serverless ML Training & Inference Platform  
 **Purpose:** Target a 14-day CPU MVP + 7-day GPU/system-design preparation and optional production hardening for a Senior AI Platform Engineer interview.  
 **Window:** 9–29 November 2026 (target learning slices; replan scope/dates against available hours).  
-**Status:** Planning baseline reviewed; implementation starts with bootstrap inside `MLP-001`. All feature tasks remain Planned. These documents are specifications and learning plans, not claims that features are already implemented.
+**Status:** `MLP-001` is In progress: the Python bootstrap is locally verified, while the lifecycle exercise remains unimplemented. Other tasks remain Planned. See [progress](03-planning/progress.md) for commands, evidence and limits.
 
 ## Start here
 
