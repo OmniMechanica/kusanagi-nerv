@@ -35,20 +35,41 @@ The [CI workflow](.github/workflows/ci.yml) runs these checks on pull requests t
 `main` and pushes to `main`. Build artifacts are written to the ignored `dist/`
 directory.
 
-## First exercise: MLP-001
+## Run the local job API
 
-The pure Python job lifecycle is implemented and locally verified: eight states,
-18 allowed transitions and explicit errors for forbidden transitions. The 79 tests
-cover all 64 state pairs, lifecycle scenarios, argument types and package import.
-MLP-001 is **In review**, with the learner's design explanation still pending.
+```bash
+uv run --locked uvicorn kusanagi_nerv.api.app:create_app --factory --host 127.0.0.1 --port 8000
+```
 
-- Task: [MLP-001](docs/03-planning/tasks/MLP-001.md).
-- Contract: [job lifecycle](docs/01-product/job-lifecycle.md).
-- Implementation: [job_lifecycle.py](src/kusanagi_nerv/domain/job_lifecycle.py).
-- Tests: [test_job_lifecycle.py](tests/unit/test_job_lifecycle.py).
+Open [interactive API docs](http://127.0.0.1:8000/docs), or submit a job:
 
-Read `JobStatus`, the immutable transition map, `can_transition()` and
-`transition()` in that order. The [design notes](docs/01-product/job-lifecycle.md#mlp-001-implementation-notes)
-explain the choices; the [progress journal](docs/03-planning/progress.md)
-records verification and scope. These functions check graph rules; persistence,
-execution attempts and safe remote cancellation arrive in later tasks.
+```bash
+curl -i http://127.0.0.1:8000/v1/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"tiny-mlp","dataset":"synthetic-v1","epochs":5,"resources":{"cpus":2,"gpus":0,"memory_gib":2},"max_retries":2}'
+```
+
+The response is `202` with a UUID, `status: "queued"` and a relative `Location`
+such as `/v1/jobs/<job_id>`. Send a GET to that path on the same server to inspect
+the job. The [API contract](docs/01-product/api-contracts.md) documents validation
+limits and typed `404`/`422` errors.
+
+This increment uses one fixed **test tenant**, with no authentication. Records are
+in memory: use a single worker; restarting the app loses its jobs. Every POST
+creates a new job, even with the same `Idempotency-Key`. No executor is connected,
+so accepted jobs stay queued with `attempt: 0`; training, durable storage,
+idempotency and cancellation arrive in later tasks.
+
+## Implemented increments
+
+- [MLP-001](docs/03-planning/tasks/MLP-001.md): eight-state pure Python
+  [lifecycle](src/kusanagi_nerv/domain/job_lifecycle.py), merged with technical
+  review approval; the learner's final checkpoint remains pending.
+- [MLP-002](docs/03-planning/tasks/MLP-002.md): typed create/get API,
+  [validation models](src/kusanagi_nerv/api/schemas.py), replaceable in-memory
+  [repository](src/kusanagi_nerv/repositories/jobs.py) and
+  [API contract tests](tests/api/test_jobs.py). In review.
+
+The current suite has 146 tests. See the [progress journal](docs/03-planning/progress.md)
+for local verification, hosted checks and scope. Static analysis with mypy/Pyright
+remains a P1 follow-up; runtime schema validation and Ruff are enforced now.
