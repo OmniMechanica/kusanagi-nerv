@@ -2,7 +2,7 @@
 
 **Scope:** preparation within MLP-001, not a new ticket. Allow an additional 30–60 minutes, separate from its 60–90-minute domain exercise. This page is an instruction, not evidence that setup has already run.
 
-**Current status:** bootstrap has been implemented and verified locally. Exact versions and observed results are recorded in [progress](../03-planning/progress.md#2026-11-08--mlp-001--repository-bootstrap). The lifecycle module and its unit-test file remain exercise placeholders; the passing test covers package installation only.
+**Current status:** bootstrap has been implemented and verified locally. Exact versions and observed results are recorded in [progress](../03-planning/progress.md#2026-11-08--mlp-001--repository-bootstrap). The subsequent [MLP-001 implementation](../03-planning/progress.md#2026-11-09--mlp-001--job-lifecycle-implementation) replaces the exercise placeholders with lifecycle code and domain tests; the original smoke test still covers package installation.
 
 ## Starting point
 

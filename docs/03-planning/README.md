@@ -16,7 +16,7 @@
 
 One ticket per vertical slice. Prefer an end-to-end working increment to adding libraries that are not used. If a task exceeds its timebox, split implementation from design, record the deferred scope and preserve the critical path.
 
-Start with [repository bootstrap](../06-engineering/bootstrap.md) as the first step of `MLP-001`; it is not a separate ticket. All feature tasks remain Planned until implementation and verification provide evidence.
+Start with [repository bootstrap](../06-engineering/bootstrap.md) as the first step of `MLP-001`; it is not a separate ticket. MLP-001 is In review with a locally verified lifecycle implementation; other tasks remain Planned. See [progress](progress.md) for evidence and the remaining learning check.
 
 ## Critical path
 

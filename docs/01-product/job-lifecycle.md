@@ -68,6 +68,18 @@ stateDiagram-v2
 
 The graph contains 18 allowed edges across 64 state pairs. MLP-001 tests the graph, including all forbidden pairs; it does not prove transactional or remote cancellation safety. MLP-004/005/007 add the contextual and concurrency tests.
 
+## MLP-001 implementation notes
+
+The implementation lives in [job_lifecycle.py](../../src/kusanagi_nerv/domain/job_lifecycle.py). Read it in this order:
+
+1. `JobStatus` uses explicit `StrEnum` values: Python names such as `QUEUED` serialize as `"queued"`. Both public functions require actual `JobStatus` arguments and raise `TypeError` for raw strings or other types. Convert input explicitly with `JobStatus(value)` at the future transport boundary; `StrEnum` equality with strings must not let `transition()` return a plain string.
+2. `MappingProxyType` protects the transition mapping and `frozenset` protects each set of destinations. Both levels are immutable through the exposed objects; `Final` also expresses the intent to type checkers. Terminal states have empty destination sets, so restarts and self-transitions are rejected by the same rule as every other forbidden edge.
+3. `can_transition(current, new)` answers whether an edge exists. `transition(current, new)` returns the requested enum member or raises `InvalidJobTransition`, a `ValueError` with `.current`, `.new` and a readable message. Neither function updates a job, writes to storage or invokes an executor. The caller owns any assignment or later durable write.
+4. A logical job can follow `RUNNING -> RETRYING -> QUEUED -> RUNNING -> SUCCEEDED`. Its ID stays the same; each execution attempt will have separate history. Retry budget, backoff and attempt creation are controller responsibilities. Once the logical job reaches `FAILED`, it cannot retry; start a new logical request if the user wants another run.
+5. Cancellation records intent before confirming an outcome. `CANCELLING -> SUCCEEDED` preserves an observed success when completion wins the race. Even `QUEUED -> CANCELLED`, although allowed in the graph, needs proof that no remote execution or in-flight dispatcher can still run the work. Those checks cannot be made from two enum values alone.
+
+The [unit tests](../../tests/unit/test_job_lifecycle.py) define expected edges independently from this implementation, check all 64 pairs, and walk six named scenarios. They validate the graph; they do not simulate concurrent controllers or remote execution.
+
 ## Review prompts
 
 - What if a worker completes after the user requests cancellation?
