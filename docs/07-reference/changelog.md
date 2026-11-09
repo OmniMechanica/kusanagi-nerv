@@ -1,5 +1,12 @@
 # Documentation change log
 
+## 2026-11-09 — v0.5 MLP-001 lifecycle implementation
+
+- Implemented the eight-state lifecycle, immutable transition map, pure transition functions and structured invalid-transition error without runtime dependencies.
+- Added exhaustive state-pair checks, named lifecycle paths and explicit invalid-input behavior; recorded 79 passing tests, lint/format checks and successful package builds.
+- Added design rationale for retry attempts, terminal outcomes, strict enum arguments and later cancellation guards.
+- Synchronized current task/index/backlog status to In review. Guided implementation is complete; the learner's design explanation remains pending.
+
 ## 2026-11-08 — v0.4 Python bootstrap
 
 - Added a packaged `src/` layout, pinned Python interpreter, uv lockfile, pytest/Ruff configuration and initial CI workflow.

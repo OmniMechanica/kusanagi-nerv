@@ -37,15 +37,18 @@ directory.
 
 ## First exercise: MLP-001
 
-Bootstrap is in place. The single smoke test verifies that the installed package
-can be imported from outside the checkout. **The job state machine and its domain
-tests are still to be implemented by the developer.**
+The pure Python job lifecycle is implemented and locally verified: eight states,
+18 allowed transitions and explicit errors for forbidden transitions. The 79 tests
+cover all 64 state pairs, lifecycle scenarios, argument types and package import.
+MLP-001 is **In review**, with the learner's design explanation still pending.
 
 - Task: [MLP-001](docs/03-planning/tasks/MLP-001.md).
 - Contract: [job lifecycle](docs/01-product/job-lifecycle.md).
 - Implementation: [job_lifecycle.py](src/kusanagi_nerv/domain/job_lifecycle.py).
 - Tests: [test_job_lifecycle.py](tests/unit/test_job_lifecycle.py).
 
-Start with `JobStatus` and `can_transition()`, then add the transition exception
-and `transition()`. Record review and verification in the
-[progress journal](docs/03-planning/progress.md).
+Read `JobStatus`, the immutable transition map, `can_transition()` and
+`transition()` in that order. The [design notes](docs/01-product/job-lifecycle.md#mlp-001-implementation-notes)
+explain the choices; the [progress journal](docs/03-planning/progress.md)
+records verification and scope. These functions check graph rules; persistence,
+execution attempts and safe remote cancellation arrive in later tasks.

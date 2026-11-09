@@ -1,7 +1,7 @@
 # Progress tracker and evidence journal
 
-**Last updated:** 2026-11-08  
-**Status:** MLP-001 In progress — bootstrap verified locally; domain implementation and all platform features remain pending.
+**Last updated:** 2026-11-09  
+**Status:** MLP-001 In review — lifecycle implemented and locally verified; learner explanation pending. API, persistence and execution remain future milestones.
 
 ## Checkpoint gates
 
@@ -16,7 +16,7 @@ Gate D can proceed without full Gate C. Record deferred P1 work explicitly and l
 
 | Day | Ticket | Status | Evidence link / command | Blocker / next action |
 |---:|---|---|---|---|
-| 01 | MLP-001 | In progress | [Bootstrap evidence](#2026-11-08--mlp-001--repository-bootstrap) | Implement JobStatus, can_transition and independent domain tests |
+| 01 | MLP-001 | In review | [Lifecycle evidence](#2026-11-09--mlp-001--job-lifecycle-implementation) | Review implementation and rehearse retry/cancellation tradeoffs |
 | 02 | MLP-002 | Planned | — | — |
 | 03 | MLP-003 | Planned | — | — |
 | 04 | MLP-004 | Planned | — | — |
@@ -66,5 +66,23 @@ Gate D can proceed without full Gate C. Record deferred P1 work explicitly and l
 - CI: workflow added for pull requests/pushes to `main`; hosted execution results are tracked in the bootstrap PR checks. Local results do not establish Linux CI success.
 - Limits: no lifecycle behavior or domain tests implemented; no Ray, API, DB, GPU or platform integration validated. MLP-001 is not Done.
 - Next step: developer implements `JobStatus` and `can_transition()` with independent expected transition cases, then requests review.
+
+## 2026-11-09 — MLP-001 — Job lifecycle implementation
+
+- Status: In review; implementation and local verification complete, learner explanation pending.
+- Evidence: `TESTED-CPU` for pure Python domain and package checks on macOS arm64.
+- Work mode: assistant implementation with step-by-step explanations, explicitly requested by the user; this is not evidence of independent learner implementation or a completed interview drill.
+- Environment: existing CPython 3.12.16, uv 0.13.7, pytest 9.2.0 and Ruff 0.17.4; no dependency changes.
+- Code: [lifecycle](../../src/kusanagi_nerv/domain/job_lifecycle.py), [domain tests](../../tests/unit/test_job_lifecycle.py); rationale in [design notes](../01-product/job-lifecycle.md#mlp-001-implementation-notes).
+- `uv run --locked ruff check src tests`: all checks passed.
+- `uv run --locked ruff format --check src tests`: all five Python files already formatted.
+- `uv run --locked pytest -q`: 79 passed, with no warnings (78 domain cases and one package-installation smoke test).
+- Test coverage: all 64 state pairs (18 allowed, 46 forbidden), enum names/values, six lifecycle paths and seven invalid-input pairs checked against both public functions. Expected edges are separate from the implementation map.
+- `uv build`: wheel and source distribution built successfully.
+- Independent review: behavior also compared directly with the specification table; no missing/extra transitions or blocking correctness findings.
+- CI: hosted results are tracked in the implementation PR checks; local results alone do not establish Linux success.
+- Decision/tradeoff: an immutable graph and two pure functions keep domain rules independent of adapters. Strict enum inputs preserve the declared return type. Retry policy and attempt ownership need execution context and remain outside this module.
+- Limits: scenario paths do not prove cancellation races, transaction isolation or remote execution safety. No API, DB, Ray, GPU or model training has been exercised.
+- Next step: review the implementation and explain logical job versus attempt, terminal `FAILED`, and the evidence needed to finalize cancellation. Record that learning check before marking MLP-001 Done.
 
 The [backlog CSV](backlog.csv) also tracks ticket statuses and dependencies. Keep both consistent as tasks complete.
