@@ -33,6 +33,7 @@ class Job:
     status: JobStatus
     created_at: datetime
     updated_at: datetime
+    state_version: int = 0
     attempt: int = 0
     checkpoint_uri: str | None = None
     artifact_uri: str | None = None

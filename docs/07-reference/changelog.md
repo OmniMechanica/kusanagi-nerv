@@ -1,5 +1,20 @@
 # Documentation change log
 
+## 2026-11-11 — v0.8 MLP-004 durable controller
+
+- Added a separate controller, durable attempt/submission identities, PostgreSQL queue claims and owner/epoch/expiry guards; generic state updates cannot bypass an existing attempt.
+- Added an explicit persistent simulation adapter and a run/recovery guide separating real DB evidence from simulated execution.
+- Recorded 204 passing tests, including two competing claim transactions, stale and blocked writers, uncertain submission outcomes and an actual controller process crash/restart.
+- Moved MLP-004 to In review with its learning drill pending. Recorded merged PR #5/#6 and integration of MLP-003 from its merged feature branch into the new main-targeted branch.
+- Retry policy, cancellation and HTTP idempotency remain MLP-005; no Ray/training/GPU execution is claimed.
+
+## 2026-11-11 — v0.7 MLP-003 PostgreSQL ledger
+
+- Added transactional async PostgreSQL storage, an explicit Alembic migration, canonical payload hashes and conditional status/version updates.
+- Made the database URL required for the normal API, retained explicit memory injection for tests, and documented sanitized `503` errors and uncertain commit outcomes.
+- Added Docker Compose setup, migration/test runbook and a separate PostgreSQL CI job; recorded 174 passing tests including a real API process crash and competing writers.
+- Moved MLP-003 to In review, preserving the still-open MLP-002 dependency and pending learning checks. Defined the next attempt/lease migration without claiming dispatch or remote cancellation safety.
+
 ## 2026-11-09 — v0.6 MLP-002 typed job API
 
 - Added typed FastAPI create/get routes, strict Pydantic request validation, documented error envelopes and a tenant-scoped injectable in-memory repository.

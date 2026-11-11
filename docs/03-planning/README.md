@@ -16,7 +16,7 @@
 
 One ticket per vertical slice. Prefer an end-to-end working increment to adding libraries that are not used. If a task exceeds its timebox, split implementation from design, record the deferred scope and preserve the critical path.
 
-Start with [repository bootstrap](../06-engineering/bootstrap.md) as the first step of `MLP-001`; it is not a separate ticket. MLP-001 is merged and technically approved, with its learning checkpoint pending; MLP-002 is In review with a locally verified API. Other tasks remain Planned. See [progress](progress.md) for evidence and the remaining learning checks.
+Start with [repository bootstrap](../06-engineering/bootstrap.md) as the first step of `MLP-001`; it is not a separate ticket. MLP-001–003 have merged PRs; MLP-003 is carried from the preceding feature branch for integration into main. MLP-004 is In review with verified PostgreSQL coordination and simulated execution. Learning checkpoints remain pending; MLP-005 onward remain Planned. See [progress](progress.md) for evidence and the remaining learning checks.
 
 ## Critical path
 

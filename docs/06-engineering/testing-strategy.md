@@ -13,7 +13,15 @@
 | Full E2E | Submit → train → restore → serve → predict | MLP-013 |
 | Chaos | Controller/worker/object-store failure matrix | MLP-020 |
 
+MLP-003 adds an `integration` marker and a separate PostgreSQL CI service job. Fast checks explicitly select `-m 'not integration'`. Locally, DB cases require `KUSANAGI_TEST_DATABASE_URL`; missing configuration produces visible skips, not database evidence. Every DB case uses an owned disposable database. The process-crash test kills a real Uvicorn process after `202` and verifies the job through a new API process. See [reproduction commands](postgres.md#run-the-checks).
+
 ## Non-flaky testing principles
+
+MLP-004 extends the real DB suite with claims synchronized inside two transactions,
+locked-row skipping, stale owner/epoch/expiry fencing (including a blocked writer),
+durable identity across unknown submit outcomes, and actual controller-process
+death followed by natural lease expiry. Executor activity is `SIMULATED`; database
+coordination/process recovery are `TESTED-CPU`. See the [controller guide](controller.md).
 
 - MLP-001 covers all 64 state pairs against the specification: 18 allowed, 46 forbidden. Expected outcomes must not be generated from the implementation map. These tests establish graph rules, not concurrency safety.
 - Prefer controllable clocks, events, barriers and deterministic seeds to arbitrary `sleep` calls.

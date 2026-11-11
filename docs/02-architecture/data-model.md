@@ -1,5 +1,21 @@
 # Data model and consistency
 
+## Implemented in MLP-003
+
+Migration `0001_job_ledger` creates only `jobs`: UUID `id`, `tenant_id`, JSONB `spec_json`, canonical `payload_hash`, nullable reserved `idempotency_key`, `status`, `state_version`, timezone-aware creation/update timestamps, `attempt` count and checkpoint/artifact/result/waiting/error fields matching the domain record. Job status, nonnegative version/attempt, nonempty tenant and basic JSON/hash shape have check constraints. Status/creation and tenant/creation/ID indexes support later scheduling/listing.
+
+The tenant/key uniqueness constraint is present, but current submissions use NULL keys; HTTP idempotency is not implemented. Result model IDs have no foreign key until the model table exists. The API commits the queued row before acknowledgement; a conditional status/version update prevents silent overwrites. Read the [PostgreSQL guide](../06-engineering/postgres.md) for the tested guarantees and their limits.
+
+## Implemented in MLP-004
+
+Migration `0002_attempt_leases` adds `job_attempts`: job FK, attempt number, unique submission ID, executor kind, lease owner/epoch/expiry, claim/heartbeat/submission-intent timestamps, last observation and accepted/started/finished timestamps. `(job_id, attempt_no)` is unique; a partial unique index allows at most one unfinished attempt per job. Terminal observations and `finished_at` must agree.
+
+Claim, attempt creation and submission intent commit together before dispatch. Recovery keeps the identity and increments the lease epoch. Observations and job transitions require current owner/epoch/expiry, attempt and job version under a consistent job-first lock order. Generic version-only updates reject jobs with attempt history. Later retry/cancellation metadata and policy remain MLP-005.
+
+`simulated_executions` is a separate durable fake-runtime table keyed by submission ID, with acceptance/completion timestamps. It makes restart/idempotent-submit tests possible without claiming actual training or remote-runtime availability. See the [controller guide](../06-engineering/controller.md) for the tested boundaries.
+
+MLP-003's `attempt = 0` is a count placeholder for accepted but undispatched work, not an execution-history record. No worker or remote execution is created in this milestone.
+
 ## Proposed tables
 
 ```text

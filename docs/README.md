@@ -6,14 +6,14 @@
 **Product:** Custom Self-Service Serverless ML Training & Inference Platform  
 **Purpose:** Target a 14-day CPU MVP + 7-day GPU/system-design preparation and optional production hardening for a Senior AI Platform Engineer interview.  
 **Window:** 9–29 November 2026 (target learning slices; replan scope/dates against available hours).  
-**Status:** `MLP-001` is merged and technically approved, with its learning checkpoint still pending. `MLP-002` is In review: typed create/get API and in-memory storage are implemented; 146 tests pass locally. Other tasks remain Planned. See [progress](03-planning/progress.md) for commands, evidence and limits.
+**Status:** MLP-001–003 have merged PRs; MLP-003 was merged into the preceding feature branch and is carried here for integration into main. MLP-004 is In review: durable attempts, fenced leases and a separate controller with simulated execution. All learning checkpoints remain pending; 204 tests pass locally, including 39 real PostgreSQL integration cases. MLP-005 onward remain Planned. See [progress](03-planning/progress.md) for evidence and limits.
 
 ## Start here
 
 1. Read [Vision and success criteria](00-foundation/vision-and-success.md) (5 minutes).
 2. Review [role/skill alignment](00-foundation/role-skills-matrix.md) and [priority policy](03-planning/priorities.md).
 3. Follow the [21-day roadmap](03-planning/roadmap.md) and the [task backlog](03-planning/README.md).
-4. Review the [MLP-001 lifecycle](01-product/job-lifecycle.md#mlp-001-implementation-notes) and [MLP-002 API](03-planning/tasks/MLP-002.md). Follow the [root README](../README.md#run-the-local-job-api) to run create/get locally, then complete the learning checkpoints before marking the tasks Done.
+4. Review the [MLP-001 lifecycle](01-product/job-lifecycle.md#mlp-001-implementation-notes), [MLP-002 API](03-planning/tasks/MLP-002.md) and [MLP-003 persistence](03-planning/tasks/MLP-003.md). Follow the [PostgreSQL guide](06-engineering/postgres.md) and [controller simulation guide](06-engineering/controller.md) to run the current increment locally, then complete the learning checkpoints before marking the tasks Done.
 5. Study the relevant part of the [parallel course plan](04-learning/course-mapping.md), then rehearse a relevant [interview question](05-interview-prep/question-bank.md).
 6. Track completion in [progress](03-planning/progress.md) and record evidence, not just check marks.
 

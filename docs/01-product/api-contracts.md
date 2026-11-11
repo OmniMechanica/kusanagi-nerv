@@ -2,14 +2,15 @@
 
 **API version:** `/v1`. This is a target contract and will evolve through ADRs.
 
-## Implemented in MLP-002
+## Implemented through MLP-004
 
-Only job creation and lookup are implemented, plus FastAPI's `/docs` and `/openapi.json`. The app uses an injected in-memory repository and the fixed `local-test-tenant` identity. This is a local learning configuration, not production authentication; no `X-Test-Tenant` header is enabled. Tests override the internal tenant dependency to verify isolation. `tenant_id` and all other extra request fields are rejected, including within `resources`.
+Only job creation and lookup are implemented, plus FastAPI's `/docs` and `/openapi.json`. The app uses an injected PostgreSQL repository and the fixed `local-test-tenant` identity; memory is an explicit test adapter. This is a local learning configuration, not production authentication; no `X-Test-Tenant` header is enabled. Tests override the internal tenant dependency to verify isolation. `tenant_id` and all other extra request fields are rejected, including within `resources`.
 
-- POST stores a queued job before returning `202` with a UUID and relative `Location`; it does not perform training or schedule a background task. GET returns the submitted specification, requested resources, status, timestamps and the result/error fields below. New jobs have `attempt: 0` and null result/error/waiting fields because no executor is connected.
+- POST commits a queued job in PostgreSQL before returning `202` with a UUID and relative `Location`; it does not perform training or schedule a background task. GET returns the submitted specification, requested resources, status, timestamps and the result/error fields below. Admission initializes `attempt: 0` and null result/error/waiting fields. With the separate MLP-004 controller running, GET can already show an attempt or a later state, even on the first read; the acceptance response still reports queued admission.
 - Every POST creates a new job, including repeated `Idempotency-Key` requests. Idempotency and `409` behavior below are targets for MLP-005, not guarantees of this increment.
-- Jobs disappear on restart and are not shared across worker processes. Run a single local worker. Durable storage is MLP-003; dispatch and guarded cancellation are MLP-004/005.
+- Jobs survive API restarts; processes using the same database share the ledger. Migrations run explicitly before startup. MLP-004 adds simulated CPU dispatch and fenced observations. It creates no real model/artifacts; GPU requests stay queued. Retry policy and guarded cancellation remain MLP-005.
 - Unknown and other-tenant UUIDs produce the same `404` envelope; a malformed UUID produces `422`.
+- Database failures produce a sanitized `503 storage_unavailable`. An unconfirmed write is never acknowledged as `202`, but a lost response/connection during commit can leave the actual outcome unknown. There is no automatic write retry; duplicate POSTs remain possible until MLP-005. See [storage failure semantics](../06-engineering/postgres.md#failure-behavior-and-remaining-scope).
 
 ### Input validation
 
@@ -28,7 +29,7 @@ Identifier validation is syntactic; this milestone does not resolve a model/data
 
 ### Error envelope
 
-Both documented error statuses use `ErrorResponse`. Clients should use `error.code` and detail locations; human-readable validation messages can evolve with Pydantic.
+Documented `404`, `422` and `503` responses use `ErrorResponse`. Clients should use `error.code` and detail locations; human-readable validation messages can evolve with Pydantic.
 
 ```json
 {
@@ -43,6 +44,8 @@ Both documented error statuses use `ErrorResponse`. Clients should use `error.co
 ```
 
 For `404`, `code` is `job_not_found`, `message` is `Job not found`, and `details` is empty. Validation failures omit raw input and validator context; malformed JSON and invalid path parameters use the same `422` envelope. Generic framework errors such as an unknown route or unexpected server failure are outside this job error contract.
+
+For `503`, `code` is `storage_unavailable`, `message` is `Job storage is unavailable`, and `details` is empty. SQL, connection strings and raw driver errors are not exposed.
 
 ## Create job
 

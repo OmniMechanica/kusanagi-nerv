@@ -1,7 +1,7 @@
 # Progress tracker and evidence journal
 
-**Last updated:** 2026-11-09  
-**Status:** MLP-001 merged and technically approved, with its learning checkpoint pending. MLP-002 In review — create/get API implemented and locally verified. Persistence and execution remain future milestones.
+**Last updated:** 2026-11-11  
+**Status:** MLP-001–003 have merged PRs (MLP-003 requires integration from its merged feature branch into main). MLP-004 In review — separate controller, durable attempts, fenced leases and simulated execution verified. Learning checkpoints remain pending; no real ML execution is claimed.
 
 ## Checkpoint gates
 
@@ -17,9 +17,9 @@ Gate D can proceed without full Gate C. Record deferred P1 work explicitly and l
 | Day | Ticket | Status | Evidence link / command | Blocker / next action |
 |---:|---|---|---|---|
 | 01 | MLP-001 | In review | [Lifecycle evidence](#2026-11-09--mlp-001--job-lifecycle-implementation), [merged PR #4](https://github.com/OmniMechanica/kusanagi-nerv/pull/4) | Technical review approved; finish learning checkpoint |
-| 02 | MLP-002 | In review | [API evidence](#2026-11-09--mlp-002--typed-job-api) | Review create/get API and rehearse 202/async/durable-queue tradeoffs |
-| 03 | MLP-003 | Planned | — | — |
-| 04 | MLP-004 | Planned | — | — |
+| 02 | MLP-002 | In review | [API evidence](#2026-11-09--mlp-002--typed-job-api) | PR #5 merged into main; rehearse 202/async/durable-queue tradeoffs |
+| 03 | MLP-003 | In review | [PostgreSQL evidence](#2026-11-11--mlp-003--durable-postgresql-ledger) | PR #6 merged into MLP-002 branch; integrate into main and complete learning drill |
+| 04 | MLP-004 | In review | [Controller evidence](#2026-11-11--mlp-004--durable-controller-and-fenced-leases) | Review claim/recovery semantics and complete learning drill |
 | 05 | MLP-005 | Planned | — | — |
 | 06 | MLP-006 | Planned | — | — |
 | 07 | MLP-007 | Planned | — | — |
@@ -108,5 +108,45 @@ Gate D can proceed without full Gate C. Record deferred P1 work explicitly and l
 - Decision/tradeoff: Pydantic validates at the HTTP boundary, immutable standard-library records keep the domain independent, and an asynchronous repository protocol leaves room for PostgreSQL. API handlers await admission and do not invoke an executor or `BackgroundTasks`.
 - Limits: one fixed local test tenant, no authentication, no durable storage or multi-worker sharing. Each POST creates a new job even with an identical idempotency key. No cancellation, retry execution, Ray, GPU or training run is claimed. No latency SLO or static type-check result is claimed.
 - Next step: review the API and explain HTTP 202, async I/O versus CPU work, and why `BackgroundTasks` cannot replace a durable queue; then proceed to MLP-003 persistence.
+
+## 2026-11-11 — MLP-003 — Durable PostgreSQL ledger
+
+- Status: In review; implementation and local verification complete, review/learning drill pending. Based on MLP-002's still-open [PR #5](https://github.com/OmniMechanica/kusanagi-nerv/pull/5); no approval or merge of that PR is inferred from proceeding.
+- Evidence: `TESTED-CPU` on macOS arm64 with real PostgreSQL in Docker Desktop; no SQLite substitute or model training involved.
+- Environment: CPython 3.12.16, uv 0.13.7, SQLAlchemy 2.1.8, asyncpg 0.32.0, Alembic 1.20.1, pytest-asyncio 1.4.1.post1; pinned PostgreSQL 18.6 Alpine image and digest in Compose/CI. Existing API dependencies remain locked.
+- Code: [PostgreSQL repository](../../src/kusanagi_nerv/repositories/postgres.py), [schema](../../src/kusanagi_nerv/db/models.py), [initial migration](../../migrations/versions/0001_job_ledger.py), [DB tests](../../tests/integration/test_postgres.py), [process-crash test](../../tests/integration/test_api_restart.py).
+- `docker --context desktop-linux compose up -d --wait postgres`: project-owned local service became healthy. No global Docker context switch was needed.
+- With the development URL exported, `uv run --locked alembic upgrade head` succeeded; `alembic current` returned `0001_job_ledger (head)`; `alembic check` reported no new upgrade operations.
+- With the test URL exported, `uv run --locked pytest -q`: 174 passed with no warnings, including 18 PostgreSQL integration cases and 156 fast cases.
+- `uv run --locked ruff check src tests migrations` passed; formatting check reported all 22 Python files formatted; `uv build` produced the wheel and source distribution.
+- Integration evidence: commit/read round trip, metadata/hash storage, rollback and recovery after a rejected write, tenant/identity/status predicates, schema constraints, repeated upgrade without data loss, downgrade/upgrade only in an owned disposable DB, and driver/schema failures exposed as sanitized `503` responses.
+- Race evidence: two independently scoped sessions read the same version and synchronize on a barrier; exactly one conditional update commits. A stale version also fails after a retry cycle returns the job to its original status.
+- Restart evidence: a real Uvicorn process accepted a job, was killed, and a fresh process returned the identical job view from PostgreSQL.
+- Decision/tradeoff: PostgreSQL owns durable queued state. New per-operation sessions commit before acknowledgement; migrations are explicit and startup performs no DDL. The internal compare-and-swap primitive protects versions but does not yet establish attempt/lease authority or remote cancellation safety.
+- Limits: fixed test tenant, no production authentication, no idempotency/deduplication or automatic write retries. A lost response during commit may leave the outcome unknown. Attempts/leases and dispatch require MLP-004's next migration; retry/cancellation policy follows in MLP-005.
+- CI: fast lint/tests/package and PostgreSQL integration run as separate jobs; all PR targets are supported so dependent feature branches receive checks. Hosted results are tracked in the implementation PR.
+- Cleanup: zero disposable `kusanagi_test_*` databases remained; the project PostgreSQL container was stopped after verification. Its named volume retains the migrated development schema. No API test processes remain running.
+- Next step: review MLP-002/003 in dependency order and explain commit-before-202, version conflicts and uncertain outcomes before marking the learning tasks Done.
+
+## 2026-11-11 — MLP-004 — Durable controller and fenced leases
+
+- Status: In review; implementation and local verification complete. Learning drill pending; no independent learner implementation is claimed.
+- Dependency integration: PR #5 merged into main as `b5b12c9`. PR #6 merged into `feat/mlp-002-job-api` as `cdac562`, not main. The MLP-004 branch starts from main and merges that already-reviewed history; its PR targets main directly.
+- Evidence: `TESTED-CPU` for PostgreSQL concurrency, migrations and real process recovery on macOS arm64. Executor results are `SIMULATED`, with no training, model registration or GPU work.
+- Code: [controller](../../src/kusanagi_nerv/controller/service.py), [attempt store](../../src/kusanagi_nerv/repositories/attempts.py), [runtime contract](../../src/kusanagi_nerv/domain/execution.py), [simulation](../../src/kusanagi_nerv/executors/simulated.py), [migration](../../migrations/versions/0002_attempt_leases.py), [race tests](../../tests/integration/test_controller.py), [process tests](../../tests/integration/test_api_restart.py).
+- Environment: unchanged locked Python/dependency versions and pinned PostgreSQL 18.6 image from MLP-003; no new runtime dependency.
+- With the local test database URL exported, `.venv/bin/pytest -q`: **204 passed in 27.88s**, comprising 165 fast cases and 39 real PostgreSQL integration cases.
+- Final checks: Ruff lint passed, all 33 Python files passed formatting, 165 fast tests passed after the OpenAPI description update, and `uv build` produced wheel/source distributions. The wheel contains the controller/adapters; the installed module's `--help` works in isolated interpreter mode. Local documentation file links and whitespace checks passed.
+- Development schema: explicit `alembic upgrade head` succeeded, `alembic current` returned `0002_attempt_leases (head)`, and `alembic check` found no new operations. Existing development data/volume were retained.
+- Cleanup: zero disposable test databases and no API/controller test processes remained. The project PostgreSQL service was stopped; its named volume and migrated schema were preserved.
+- Claim evidence: two independent database transactions synchronize on a barrier before claiming one job; exactly one attempt is created. A locked job is skipped while another job remains claimable. A partial unique index rejects another unfinished attempt.
+- Fencing evidence: stale owner, stale epoch, expired lease (even without takeover), and terminal-attempt writes are rejected. Another test starts a writer while valid, blocks it on the job lock, expires its lease, then verifies rejection after the lock is released. Version-only cancellation cannot bypass an existing attempt.
+- Recovery evidence: API returns 202 with no controller; a real controller process starts the simulation and is killed. A second process waits for natural lease expiry and commits success using the same attempt/submission IDs and one simulated execution. No test-only lease mutation is used in this process-restart scenario.
+- Failure evidence: unknown lookup does not dispatch; transport calls have deadlines; lost submit responses before/after acceptance preserve identity; observed accepted work that disappears is not resubmitted or failed; confirmed rejection/termination finalizes once; a stale caller cannot commit success after an external call.
+- Migration evidence: schema/model agreement, repeated upgrade, populated MLP-003 ledger preserved through upgrade, and downgrade/upgrade only in disposable databases are covered by the suite.
+- Decision/tradeoff: DB-authoritative wall-clock leases plus consistent job-first locking fence ledger writes. Durable adapter idempotency is still required for in-flight external calls; no exactly-once guarantee. The fake runtime shares PostgreSQL for deterministic restart evidence, not for production execution isolation.
+- Limits: one active attempt per controller; unresolved unknown work occupies that slot. No fairness, production auth/quotas, actual CPU/memory allocation, Ray, training or artifacts. GPU requests remain queued with zero attempts. Retry budgets, backoff, cancellation and HTTP idempotency remain MLP-005.
+- CI: the existing lint/tests/package and PostgreSQL integration jobs cover the new files/tests. Hosted outcomes are recorded in the implementation PR checks, separately from local evidence.
+- Next step: review MLP-004 and explain commit-before-dispatch, lease expiry versus worker termination, and why takeover preserves submission identity; then start MLP-005.
 
 The [backlog CSV](backlog.csv) also tracks ticket statuses and dependencies. Keep both consistent as tasks complete.
