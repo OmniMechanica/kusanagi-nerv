@@ -1,5 +1,7 @@
-"""MLP-002: admit and inspect jobs without running training in HTTP handlers."""
+"""Admit and inspect durable jobs without running training in HTTP handlers."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Annotated, cast
 from uuid import UUID, uuid4
@@ -7,6 +9,7 @@ from uuid import UUID, uuid4
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from kusanagi_nerv.api.schemas import (
     ApiError,
@@ -16,9 +19,12 @@ from kusanagi_nerv.api.schemas import (
     JobView,
     ValidationIssue,
 )
+from kusanagi_nerv.db.connection import create_database_engine
+from kusanagi_nerv.db.connection import database_url as resolve_database_url
 from kusanagi_nerv.domain.job_lifecycle import JobStatus, transition
 from kusanagi_nerv.domain.jobs import Job
-from kusanagi_nerv.repositories.jobs import InMemoryJobRepository, JobRepository
+from kusanagi_nerv.repositories.jobs import JobRepository, RepositoryUnavailable
+from kusanagi_nerv.repositories.postgres import PostgresJobRepository
 
 
 async def get_repository(request: Request) -> JobRepository:
@@ -30,20 +36,49 @@ async def get_tenant_id() -> str:
     return "local-test-tenant"
 
 
-def create_app(repository: JobRepository | None = None) -> FastAPI:
+def create_app(
+    repository: JobRepository | None = None, *, database_url: str | None = None
+) -> FastAPI:
+    url = resolve_database_url(database_url) if repository is None else None
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        if repository is not None:
+            app.state.job_repository = repository
+            yield
+        else:
+            assert url is not None
+            engine = create_database_engine(url)
+            app.state.job_repository = PostgresJobRepository(
+                async_sessionmaker(engine, expire_on_commit=False)
+            )
+            try:
+                yield
+            finally:
+                await engine.dispose()
+
     app = FastAPI(
         title="KUSANAGI NERV",
         version="0.1.0",
         description=(
-            "Local learning API with a fixed test tenant. Jobs are stored in memory "
-            "and remain queued; no executor is connected. Each POST creates a new "
-            "job, including requests with Idempotency-Key. Storage is lost on "
-            "restart and is not shared between worker processes."
+            "Learning API with a fixed test tenant. Jobs are committed to PostgreSQL "
+            "before acceptance and survive API restarts. They remain queued; no executor "
+            "is connected. Each POST creates a new job, including requests with "
+            "Idempotency-Key. Tests may explicitly inject an in-memory repository."
         ),
+        lifespan=lifespan,
     )
-    app.state.job_repository = (
-        repository if repository is not None else InMemoryJobRepository()
-    )
+
+    @app.exception_handler(RepositoryUnavailable)
+    async def storage_error(
+        request: Request, exc: RepositoryUnavailable
+    ) -> JSONResponse:
+        body = ErrorResponse(
+            error=ApiError(
+                code="storage_unavailable", message="Job storage is unavailable"
+            )
+        )
+        return JSONResponse(status_code=503, content=body.model_dump(mode="json"))
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(
@@ -70,7 +105,7 @@ def create_app(repository: JobRepository | None = None) -> FastAPI:
         "/v1/jobs",
         status_code=202,
         response_model=JobAccepted,
-        summary="Accept a job into the local in-memory queue",
+        summary="Commit a job to the durable queue",
         responses={
             202: {
                 "headers": {
@@ -89,6 +124,10 @@ def create_app(repository: JobRepository | None = None) -> FastAPI:
                 },
             },
             422: {"model": ErrorResponse, "description": "Invalid job specification"},
+            503: {
+                "model": ErrorResponse,
+                "description": "Storage operation could not be confirmed",
+            },
         },
     )
     async def create_job(
@@ -120,6 +159,7 @@ def create_app(repository: JobRepository | None = None) -> FastAPI:
         responses={
             404: {"model": ErrorResponse, "description": "Unknown or other-tenant job"},
             422: {"model": ErrorResponse, "description": "Job ID is not a UUID"},
+            503: {"model": ErrorResponse, "description": "Storage unavailable"},
         },
     )
     async def get_job(
