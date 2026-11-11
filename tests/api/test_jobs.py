@@ -13,11 +13,12 @@ from kusanagi_nerv.api.app import create_app, get_repository, get_tenant_id
 from kusanagi_nerv.api.schemas import ErrorResponse, JobAccepted, JobView
 from kusanagi_nerv.domain.job_lifecycle import JobStatus
 from kusanagi_nerv.domain.jobs import Job
+from kusanagi_nerv.repositories.jobs import InMemoryJobRepository, RepositoryUnavailable
 
 
 @pytest.fixture
 def client() -> Iterator[TestClient]:
-    with TestClient(create_app()) as test_client:
+    with TestClient(create_app(InMemoryJobRepository())) as test_client:
         yield test_client
 
 
@@ -225,7 +226,7 @@ def test_malformed_job_id_is_422(client: TestClient) -> None:
 
 
 def test_jobs_are_scoped_to_the_injected_tenant(payload: dict[str, Any]) -> None:
-    app = create_app()
+    app = create_app(InMemoryJobRepository())
     app.dependency_overrides[get_tenant_id] = lambda: "tenant-a"
     with TestClient(app) as client:
         created = client.post("/v1/jobs", json=payload)
@@ -241,9 +242,9 @@ def test_jobs_are_scoped_to_the_injected_tenant(payload: dict[str, Any]) -> None
 
 
 def test_new_app_does_not_share_in_memory_jobs(payload: dict[str, Any]) -> None:
-    with TestClient(create_app()) as first:
+    with TestClient(create_app(InMemoryJobRepository())) as first:
         location = first.post("/v1/jobs", json=payload).headers["Location"]
-    with TestClient(create_app()) as second:
+    with TestClient(create_app(InMemoryJobRepository())) as second:
         assert second.get(location).status_code == 404
 
 
@@ -276,12 +277,23 @@ class RecordingRepository:
             None,
         )
 
+    async def update_status(
+        self,
+        *,
+        tenant_id: str,
+        job_id: UUID,
+        expected_status: JobStatus,
+        expected_version: int,
+        new_status: JobStatus,
+    ) -> Job:
+        raise AssertionError("The create/get API must not update execution state")
+
 
 def test_repository_can_be_replaced_and_admission_finishes_before_202(
     payload: dict[str, Any],
 ) -> None:
     repository = RecordingRepository()
-    app = create_app()
+    app = create_app(InMemoryJobRepository())
     app.dependency_overrides[get_repository] = lambda: repository
     with TestClient(app) as client:
         result = client.post("/v1/jobs", json=payload)
@@ -322,8 +334,8 @@ def test_openapi_documents_the_implemented_contract(client: TestClient) -> None:
     schema = result.json()
     post = schema["paths"]["/v1/jobs"]["post"]
     get = schema["paths"]["/v1/jobs/{job_id}"]["get"]
-    assert set(post["responses"]) == {"202", "422"}
-    assert set(get["responses"]) == {"200", "404", "422"}
+    assert set(post["responses"]) == {"202", "422", "503"}
+    assert set(get["responses"]) == {"200", "404", "422", "503"}
     assert "Location" in post["responses"]["202"]["headers"]
     for operation, status, model in (
         (post, "202", "JobAccepted"),
@@ -331,6 +343,8 @@ def test_openapi_documents_the_implemented_contract(client: TestClient) -> None:
         (get, "200", "JobView"),
         (get, "404", "ErrorResponse"),
         (get, "422", "ErrorResponse"),
+        (post, "503", "ErrorResponse"),
+        (get, "503", "ErrorResponse"),
     ):
         assert operation["responses"][status]["content"]["application/json"][
             "schema"
@@ -341,3 +355,39 @@ def test_openapi_documents_the_implemented_contract(client: TestClient) -> None:
     assert schemas["JobSpec"]["examples"][0]["model"] == "tiny-mlp"
     assert schemas["ResourceRequest"]["properties"]["cpus"]["maximum"] == 64
     assert "Idempotency-Key" in schema["info"]["description"]
+
+
+@pytest.mark.parametrize("method", ["post", "get"])
+def test_storage_failures_use_a_sanitized_503(
+    payload: dict[str, Any], method: str
+) -> None:
+    class BrokenRepository(RecordingRepository):
+        async def add(self, job: Job) -> None:
+            raise RepositoryUnavailable("sensitive driver details")
+
+        async def get(self, *, tenant_id: str, job_id: UUID) -> Job | None:
+            raise RepositoryUnavailable("sensitive driver details")
+
+    with TestClient(create_app(BrokenRepository())) as client:
+        result = (
+            client.post("/v1/jobs", json=payload)
+            if method == "post"
+            else client.get(f"/v1/jobs/{uuid4()}")
+        )
+    assert result.status_code == 503
+    assert result.json() == {
+        "error": {
+            "code": "storage_unavailable",
+            "message": "Job storage is unavailable",
+            "details": [],
+        }
+    }
+    assert "Location" not in result.headers
+
+
+def test_default_app_requires_explicit_database_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("KUSANAGI_DATABASE_URL", raising=False)
+    with pytest.raises(ValueError, match="Set KUSANAGI_DATABASE_URL"):
+        create_app()

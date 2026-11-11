@@ -1,5 +1,12 @@
 # Documentation change log
 
+## 2026-11-11 — v0.7 MLP-003 PostgreSQL ledger
+
+- Added transactional async PostgreSQL storage, an explicit Alembic migration, canonical payload hashes and conditional status/version updates.
+- Made the database URL required for the normal API, retained explicit memory injection for tests, and documented sanitized `503` errors and uncertain commit outcomes.
+- Added Docker Compose setup, migration/test runbook and a separate PostgreSQL CI job; recorded 174 passing tests including a real API process crash and competing writers.
+- Moved MLP-003 to In review, preserving the still-open MLP-002 dependency and pending learning checks. Defined the next attempt/lease migration without claiming dispatch or remote cancellation safety.
+
 ## 2026-11-09 — v0.6 MLP-002 typed job API
 
 - Added typed FastAPI create/get routes, strict Pydantic request validation, documented error envelopes and a tenant-scoped injectable in-memory repository.
