@@ -1,5 +1,17 @@
 # Data model and consistency
 
+## Implemented in MLP-003
+
+Migration `0001_job_ledger` creates only `jobs`: UUID `id`, `tenant_id`, JSONB `spec_json`, canonical `payload_hash`, nullable reserved `idempotency_key`, `status`, `state_version`, timezone-aware creation/update timestamps, `attempt` count and checkpoint/artifact/result/waiting/error fields matching the domain record. Job status, nonnegative version/attempt, nonempty tenant and basic JSON/hash shape have check constraints. Status/creation and tenant/creation/ID indexes support later scheduling/listing.
+
+The tenant/key uniqueness constraint is present, but current submissions use NULL keys; HTTP idempotency is not implemented. Result model IDs have no foreign key until the model table exists. The API commits the queued row before acknowledgement; a conditional status/version update prevents silent overwrites. Read the [PostgreSQL guide](../06-engineering/postgres.md) for the tested guarantees and their limits.
+
+## Next migration: MLP-004
+
+Before introducing dispatch, add `job_attempts` with job FK, attempt number, stable submission identity, attempt status, lease owner/epoch/expiry, submission intent and observed execution timestamps. Enforce `(job_id, attempt_no)` and submission-identity uniqueness, and at most one unfinished authoritative attempt per job. Add job scheduling/ownership fields needed by the controller. Commit claim, attempt creation and submission intent together; extend version checks with lease/attempt authority checks. Later retry/cancellation policy and metadata follow in MLP-005.
+
+MLP-003's `attempt = 0` is a count placeholder for accepted but undispatched work, not an execution-history record. No worker or remote execution is created in this milestone.
+
 ## Proposed tables
 
 ```text

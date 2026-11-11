@@ -118,7 +118,7 @@ class ValidationIssue(BaseModel):
 
 
 class ApiError(BaseModel):
-    code: Literal["validation_error", "job_not_found"]
+    code: Literal["validation_error", "job_not_found", "storage_unavailable"]
     message: str
     details: list[ValidationIssue] = Field(default_factory=list)
 
