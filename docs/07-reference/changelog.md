@@ -1,5 +1,12 @@
 # Documentation change log
 
+## 2026-11-09 — v0.6 MLP-002 typed job API
+
+- Added typed FastAPI create/get routes, strict Pydantic request validation, documented error envelopes and a tenant-scoped injectable in-memory repository.
+- Kept domain records independent of HTTP/storage libraries and made validation ceilings, defaults and partial milestone limitations explicit.
+- Recorded 146 passing tests, lint/format checks, package builds and a real loopback Uvicorn smoke; added local API/curl instructions.
+- Moved MLP-002 to In review. Recorded MLP-001 merge/technical approval while preserving its pending learning checkpoint; deferred static analysis to the P1 tooling follow-up.
+
 ## 2026-11-09 — v0.5 MLP-001 lifecycle implementation
 
 - Implemented the eight-state lifecycle, immutable transition map, pure transition functions and structured invalid-transition error without runtime dependencies.

@@ -2,9 +2,51 @@
 
 **API version:** `/v1`. This is a target contract and will evolve through ADRs.
 
+## Implemented in MLP-002
+
+Only job creation and lookup are implemented, plus FastAPI's `/docs` and `/openapi.json`. The app uses an injected in-memory repository and the fixed `local-test-tenant` identity. This is a local learning configuration, not production authentication; no `X-Test-Tenant` header is enabled. Tests override the internal tenant dependency to verify isolation. `tenant_id` and all other extra request fields are rejected, including within `resources`.
+
+- POST stores a queued job before returning `202` with a UUID and relative `Location`; it does not perform training or schedule a background task. GET returns the submitted specification, requested resources, status, timestamps and the result/error fields below. New jobs have `attempt: 0` and null result/error/waiting fields because no executor is connected.
+- Every POST creates a new job, including repeated `Idempotency-Key` requests. Idempotency and `409` behavior below are targets for MLP-005, not guarantees of this increment.
+- Jobs disappear on restart and are not shared across worker processes. Run a single local worker. Durable storage is MLP-003; dispatch and guarded cancellation are MLP-004/005.
+- Unknown and other-tenant UUIDs produce the same `404` envelope; a malformed UUID produces `422`.
+
+### Input validation
+
+These are explicit learning-project validation ceilings, not available capacity or tenant quotas. Actual scheduling remains a later concern. CPU and memory may be fractional; GPU count, epochs and retries must be integers. Booleans, numeric strings and non-finite numbers are rejected.
+
+| Field | Accepted values | Default |
+|---|---|---|
+| `model`, `dataset` | 1–128 characters; ASCII letter/digit first, then letters/digits/`.`/`_`/`-` | Required |
+| `epochs` | Integer, 1–10,000 inclusive | Required |
+| `resources.cpus` | Finite number, greater than 0 and at most 64 | Required |
+| `resources.gpus` | Integer, 0–8 inclusive | 0 |
+| `resources.memory_gib` | Finite number, greater than 0 and at most 512 | Required |
+| `max_retries` | Integer, 0–10 inclusive | 0 |
+
+Identifier validation is syntactic; this milestone does not resolve a model/dataset catalog or accept executable code/URLs as identifiers.
+
+### Error envelope
+
+Both documented error statuses use `ErrorResponse`. Clients should use `error.code` and detail locations; human-readable validation messages can evolve with Pydantic.
+
+```json
+{
+  "error": {
+    "code": "validation_error",
+    "message": "Request validation failed",
+    "details": [
+      {"location": ["body", "epochs"], "type": "greater_than_equal", "message": "Input should be greater than or equal to 1"}
+    ]
+  }
+}
+```
+
+For `404`, `code` is `job_not_found`, `message` is `Job not found`, and `details` is empty. Validation failures omit raw input and validator context; malformed JSON and invalid path parameters use the same `422` envelope. Generic framework errors such as an unknown route or unexpected server failure are outside this job error contract.
+
 ## Create job
 
-`POST /v1/jobs` with `Idempotency-Key` and JSON:
+Target contract (including idempotency from MLP-005): `POST /v1/jobs` with `Idempotency-Key` and JSON:
 
 ```json
 {
@@ -44,6 +86,10 @@ Implement validation and create/get in MLP-002, persistence in MLP-003, and dura
 {
   "job_id": "uuid",
   "status": "running",
+  "model": "tiny-mlp",
+  "dataset": "synthetic-v1",
+  "epochs": 5,
+  "max_retries": 2,
   "attempt": 1,
   "requested_resources": {"cpus": 2, "gpus": 0, "memory_gib": 2},
   "checkpoint_uri": null,

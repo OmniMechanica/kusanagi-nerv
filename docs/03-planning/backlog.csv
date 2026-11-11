@@ -1,6 +1,6 @@
 id,priority,phase,day,title,dependencies,estimate,acceptance_summary,status,evidence
 MLP-001,P0,Week 1,1,Pure Python job state machine,,60–90 min,Every transition in `docs/01-product/job-lifecycle.md` is allowed and every omitted transition is forbidden.,In review,TESTED-CPU: 79 tests; all 64 state pairs; see progress.md
-MLP-002,P0,Week 1,2,Typed FastAPI job contracts and endpoints,MLP-001,2–3 h,All APIs have typed request/response schemas and documented status codes.,Planned,
+MLP-002,P0,Week 1,2,Typed FastAPI job contracts and endpoints,MLP-001,2–3 h,All APIs have typed request/response schemas and documented status codes.,In review,TESTED-CPU: 67 API cases; 146 total tests; loopback HTTP smoke; see progress.md
 MLP-003,P0,Week 1,3,Durable asynchronous PostgreSQL job ledger,MLP-002,3–4 h,Job remains available after API restart.,Planned,
 MLP-004,P0,Week 1,4,Durable job controller and safe queue claiming,MLP-003,3–4 h,Two controllers never hold the authoritative active claim for one attempt at the same time.,Planned,
 MLP-005,P0,Week 1,5,"Idempotency, bounded retries and cancellation","MLP-002,MLP-003,MLP-004",3–4 h,Same key and payload returns same job ID; same key with different payload returns 409.,Planned,
