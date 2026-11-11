@@ -35,7 +35,7 @@ class JobRepository(Protocol):
         expected_version: int,
         new_status: JobStatus,
     ) -> Job:
-        """Compare-and-swap the graph state; callers must also enforce execution guards."""
+        """Compare-and-swap before any attempt; dispatched jobs need lease guards."""
         ...
 
 
@@ -72,6 +72,7 @@ class InMemoryJobRepository:
             or job.tenant_id != tenant_id
             or job.status != expected_status
             or job.state_version != expected_version
+            or job.attempt != 0
         ):
             raise JobUpdateConflict("Job state changed or job is unavailable")
         updated = replace(

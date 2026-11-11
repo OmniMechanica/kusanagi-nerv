@@ -1,5 +1,13 @@
 # Documentation change log
 
+## 2026-11-11 — v0.8 MLP-004 durable controller
+
+- Added a separate controller, durable attempt/submission identities, PostgreSQL queue claims and owner/epoch/expiry guards; generic state updates cannot bypass an existing attempt.
+- Added an explicit persistent simulation adapter and a run/recovery guide separating real DB evidence from simulated execution.
+- Recorded 204 passing tests, including two competing claim transactions, stale and blocked writers, uncertain submission outcomes and an actual controller process crash/restart.
+- Moved MLP-004 to In review with its learning drill pending. Recorded merged PR #5/#6 and integration of MLP-003 from its merged feature branch into the new main-targeted branch.
+- Retry policy, cancellation and HTTP idempotency remain MLP-005; no Ray/training/GPU execution is claimed.
+
 ## 2026-11-11 — v0.7 MLP-003 PostgreSQL ledger
 
 - Added transactional async PostgreSQL storage, an explicit Alembic migration, canonical payload hashes and conditional status/version updates.

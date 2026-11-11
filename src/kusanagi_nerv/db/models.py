@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
+    ForeignKey,
     Index,
     String,
     Text,
@@ -63,3 +64,65 @@ class JobRow(Base):
     result_model_version: Mapped[str | None] = mapped_column(String(128))
     waiting_reason: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class AttemptRow(Base):
+    __tablename__ = "job_attempts"
+    __table_args__ = (
+        UniqueConstraint("job_id", "attempt_no", name="uq_attempts_job_number"),
+        UniqueConstraint("submission_id", name="uq_attempts_submission"),
+        CheckConstraint("attempt_no > 0", name="ck_attempts_number"),
+        CheckConstraint("lease_epoch > 0", name="ck_attempts_epoch"),
+        CheckConstraint("length(lease_owner) > 0", name="ck_attempts_owner"),
+        CheckConstraint(
+            "last_observation IN ('not_found', 'unknown', 'pending', 'running', "
+            "'succeeded', 'failed', 'rejected')",
+            name="ck_attempts_observation",
+        ),
+        CheckConstraint(
+            "(finished_at IS NOT NULL) = "
+            "(last_observation IN ('succeeded', 'failed', 'rejected'))",
+            name="ck_attempts_terminal",
+        ),
+        Index(
+            "uq_attempts_unfinished",
+            "job_id",
+            unique=True,
+            postgresql_where=text("finished_at IS NULL"),
+        ),
+        Index(
+            "ix_attempts_expiry",
+            "executor_kind",
+            "lease_expires_at",
+            postgresql_where=text("finished_at IS NULL"),
+        ),
+    )
+
+    attempt_id: Mapped[UUID] = mapped_column("id", primary_key=True)
+    job_id: Mapped[UUID] = mapped_column(ForeignKey("jobs.id"))
+    attempt_no: Mapped[int]
+    submission_id: Mapped[str] = mapped_column(String(128))
+    executor_kind: Mapped[str] = mapped_column(String(64))
+    lease_owner: Mapped[str] = mapped_column(String(128))
+    lease_epoch: Mapped[int]
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    submission_intent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_observation: Mapped[str] = mapped_column(String(16))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SimulatedExecutionRow(Base):
+    """Durable test runtime, deliberately separate from controller authority."""
+
+    __tablename__ = "simulated_executions"
+    __table_args__ = (
+        CheckConstraint("finish_at >= accepted_at", name="ck_simulation_duration"),
+    )
+
+    submission_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finish_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

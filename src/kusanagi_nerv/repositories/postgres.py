@@ -2,24 +2,17 @@
 
 import hashlib
 import json
-import logging
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Any
 from uuid import UUID
 
-from asyncpg import PostgresError
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kusanagi_nerv.db.models import JobRow
 from kusanagi_nerv.domain.job_lifecycle import JobStatus, transition
 from kusanagi_nerv.domain.jobs import Job, JobResources, JobSpecification
-from kusanagi_nerv.repositories.jobs import JobUpdateConflict, RepositoryUnavailable
-
-logger = logging.getLogger(__name__)
+from kusanagi_nerv.repositories.jobs import JobUpdateConflict
+from kusanagi_nerv.repositories.transactions import TransactionalRepository
 
 
 def canonical_spec(spec: JobSpecification) -> tuple[dict[str, Any], str]:
@@ -59,21 +52,7 @@ def to_job(row: JobRow) -> Job:
     )
 
 
-class PostgresJobRepository:
-    def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
-        self._sessions = sessions
-
-    @asynccontextmanager
-    async def _transaction(self) -> AsyncIterator[AsyncSession]:
-        try:
-            # A new session/transaction per operation, never shared between tasks.
-            async with self._sessions.begin() as session:
-                yield session
-        except (SQLAlchemyError, PostgresError, OSError, TimeoutError) as exc:
-            # Do not log SQL parameters, connection strings or exception messages.
-            logger.warning("Job storage operation failed (%s)", type(exc).__name__)
-            raise RepositoryUnavailable("Job storage is unavailable") from exc
-
+class PostgresJobRepository(TransactionalRepository):
     async def add(self, job: Job) -> None:
         spec, digest = canonical_spec(job.spec)
         async with self._transaction() as session:
@@ -127,6 +106,9 @@ class PostgresJobRepository:
                     JobRow.tenant_id == tenant_id,
                     JobRow.status == expected_status.value,
                     JobRow.state_version == expected_version,
+                    # Once dispatch intent exists, only the fenced attempt store
+                    # may change execution state (including cancellation later).
+                    JobRow.attempt == 0,
                 )
                 .values(
                     status=status.value,

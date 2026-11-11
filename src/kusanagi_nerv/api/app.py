@@ -62,8 +62,9 @@ def create_app(
         version="0.1.0",
         description=(
             "Learning API with a fixed test tenant. Jobs are committed to PostgreSQL "
-            "before acceptance and survive API restarts. They remain queued; no executor "
-            "is connected. Each POST creates a new job, including requests with "
+            "before acceptance and survive API restarts. A separate controller can "
+            "simulate CPU jobs; no model training is performed yet. "
+            "Each POST creates a new job, including requests with "
             "Idempotency-Key. Tests may explicitly inject an in-memory repository."
         ),
         lifespan=lifespan,

@@ -2,6 +2,12 @@
 
 ## Failure matrix
 
+This matrix describes the target platform. MLP-004 currently verifies durable
+claims, lease fencing, unknown-outcome reconciliation and actual controller-process
+recovery using a [persistent simulated executor](../06-engineering/controller.md).
+Cancellation, attempt retries/backoff, Ray failures and checkpoint recovery remain
+later milestones. Simulation does not establish model-training or GPU evidence.
+
 | Failure | Expected response | Proof |
 |---|---|---|
 | API restarts after commit | Job and idempotency preserved | Restart / repeat request test |

@@ -1,6 +1,6 @@
 # PostgreSQL ledger: local setup and verification
 
-MLP-003 makes PostgreSQL the source of truth for logical jobs. The HTTP contract still creates queued jobs; execution starts in later milestones. The API requires `KUSANAGI_DATABASE_URL` and never falls back silently to memory. Tests can explicitly inject `InMemoryJobRepository`.
+MLP-003 makes PostgreSQL the source of truth for logical jobs. The HTTP contract creates queued jobs; MLP-004 adds an optional separate controller with simulated CPU execution. The API requires `KUSANAGI_DATABASE_URL` and never falls back silently to memory. Tests can explicitly inject `InMemoryJobRepository`.
 
 ## Start the local database and API
 
@@ -59,17 +59,18 @@ SET status = :new_status,
     updated_at = now()
 WHERE id = :job_id AND tenant_id = :tenant_id
   AND status = :expected_status AND state_version = :expected_version
+  AND attempt = 0
 RETURNING *;
 ```
 
 Zero returned rows raises `JobUpdateConflict`, including unknown/other-tenant IDs. Under PostgreSQL's default Read Committed isolation, a competing update waits and then rechecks the predicate against the committed row. The [PostgreSQL isolation documentation](https://www.postgresql.org/docs/18/transaction-iso.html#XACT-READ-COMMITTED) explains this behavior. Tests synchronize two readers with a barrier and verify exactly one successful version update; another case covers a retry cycle returning to the same status with a newer version.
 
-This is a storage primitive, not execution authorization. It does not establish ownership of an attempt, revoke an in-flight submission or prove that remote work stopped. MLP-004/005 must add those contextual checks and multi-record transactions before dispatch/cancellation are exposed.
+This is a storage primitive, not execution authorization. It does not establish ownership of an attempt, revoke an in-flight submission or prove that remote work stopped. MLP-004 restricts this primitive to jobs without attempt history and adds [fenced attempt transactions](controller.md#ownership-and-external-calls). Cancellation remains MLP-005.
 
 ## Failure behavior and remaining scope
 
 - Database/driver failures become `503 storage_unavailable` without SQL, connection strings or raw driver messages in the response. An unsuccessful or unconfirmed admission never returns `202`.
 - Connection/pool waits are bounded to 5 seconds; application commands/statements to 10 seconds, lock waits to 5 seconds. Migration connections use a 5-second connection timeout and 30-second command timeout. These are local learning defaults, not latency SLOs.
 - A lost connection during commit can leave the outcome unknown; the server may have committed despite a failed response. There is no automatic write retry. Until MLP-005, repeating POST may create another logical job. After idempotency exists, the same tenant/key must resolve that uncertainty.
-- Attempt history, leases, dispatch, execution, retry budgets and cancellation remain MLP-004/005. The planned next schema migration is described in [the data model](../02-architecture/data-model.md#next-migration-mlp-004).
+- `0002_attempt_leases` adds attempt history, fenced leases and simulated dispatch; see [the data model](../02-architecture/data-model.md#implemented-in-mlp-004). Retry budgets and cancellation remain MLP-005; actual model execution follows later.
 - The fixed tenant is still test-only; production authentication and tenancy controls remain later milestones. Database persistence does not imply model training, backup/restore testing or high availability.

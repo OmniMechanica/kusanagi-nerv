@@ -254,13 +254,17 @@ async def test_repeated_upgrade_preserves_data_and_schema_matches_models(
     migrate: Callable[..., object],
 ) -> None:
     await repository.add(job)
+    # In this owned DB the new tables are empty. Keep the existing job while
+    # returning to the MLP-003 schema, then verify the forward upgrade twice.
+    migrate("downgrade", "0001_job_ledger")
+    migrate("upgrade", "head")
     migrate("upgrade", "head")
     migrate("check")
     assert await repository.get(tenant_id=job.tenant_id, job_id=job.job_id) == job
     async with engine.connect() as connection:
         assert (
             await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0001_job_ledger"
+            == "0002_attempt_leases"
         )
 
 
