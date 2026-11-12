@@ -2,7 +2,7 @@
 
 MLP-004 introduces a separate controller process. The API still only commits and
 reads logical jobs. Start PostgreSQL and apply `alembic upgrade head` using the
-[database guide](postgres.md); the current head is `0002_attempt_leases`. Neither
+[database guide](postgres.md); the current head is `0003_retry_cancel`. Neither
 the API nor the controller creates tables at startup.
 
 ## Run the simulation
@@ -49,7 +49,7 @@ writes. Increasing TTL reduces takeovers but delays crash recovery.
 ## Ownership and external calls
 
 1. Lock an eligible job with `FOR UPDATE SKIP LOCKED`. Prefer expired unfinished
-   attempts for this executor; otherwise admit a new queued CPU job with no history.
+   attempts for this executor; otherwise admit an undispatched queued CPU job or a due, eligible retry without cancellation intent.
 2. For a new attempt, persist its UUID, stable `submission_id`, executor kind,
    submission intent and owner/epoch/expiry in the same transaction that increments
    the job attempt count and version. Dispatch starts only after confirmed commit.
@@ -57,7 +57,7 @@ writes. Increasing TTL reduces takeovers but delays crash recovery.
    Only `NOT_FOUND` before observed acceptance allows submitting that same identity,
    after another authority check. The adapter must make duplicate submit idempotent.
 4. Persist observations only under the current attempt, job version, owner, epoch
-   and unexpired lease. Job state and terminal attempt metadata commit together.
+   and unexpired lease. A newer cancellation version is consumed under the job lock without weakening attempt/lease checks. Job state and terminal attempt metadata commit together.
 5. After expiry, another controller increments the epoch and keeps the attempt and
    submission IDs. It reconciles first; it does not allocate a replacement attempt.
 
@@ -85,8 +85,9 @@ exactly-once execution claim. Ray's adapter must establish these semantics in ML
 | `PENDING` | Same unfinished attempt, queued job, `executor_pending` reason |
 | `RUNNING` | Record observed start and advance queued job |
 | `SUCCEEDED` | Atomically finish attempt and job; no model registration yet |
-| `FAILED` | Confirmed execution termination; terminal job failure |
-| `REJECTED` | Confirmed non-execution for this identity; terminal job failure |
+| `FAILED` | Confirmed termination; retry only for a transient failure with budget and no cancel intent |
+| `REJECTED` | Confirmed non-execution; same retry policy, or cancelled if cancellation was requested |
+| `CANCELLED` | Confirmed stop plus late-submit revocation; complete requested cancellation |
 | Timeout / `UNKNOWN` | Keep attempt open and `executor_outcome_unknown`; reconcile later |
 | `NOT_FOUND` after observed acceptance | Keep outcome unknown; no resubmission or failure |
 
@@ -130,8 +131,9 @@ and verifies the replacement preserves the execution identity. Other failure tes
 expire a lease explicitly or inject transport outcomes to avoid timing races.
 Executor behavior in all these tests is **SIMULATED**.
 
-MLP-005 still owns HTTP idempotency, bounded attempt retries/backoff and cancellation.
-For now a confirmed failure is terminal even if `max_retries > 0`. GPU requests
+MLP-005 implements [HTTP idempotency, bounded retries/backoff and cancellation](job-policies.md).
+The adapter returns typed observations and transient/permanent failure classification;
+transport uncertainty never consumes another attempt. GPU requests
 remain queued with zero attempts; GPU capacity reasons/scheduling arrive later.
 CPU/memory allocations, tenant quotas, scheduling fairness and production auth are
 not implemented. A permanently unknown attempt occupies its controller's single

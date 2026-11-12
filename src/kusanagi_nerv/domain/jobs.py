@@ -41,3 +41,5 @@ class Job:
     result_model_version: str | None = None
     waiting_reason: str | None = None
     error: str | None = None
+    requested_cancel_at: datetime | None = None
+    retry_not_before: datetime | None = None

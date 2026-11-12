@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Annotated, cast
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Header, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -23,7 +23,11 @@ from kusanagi_nerv.db.connection import create_database_engine
 from kusanagi_nerv.db.connection import database_url as resolve_database_url
 from kusanagi_nerv.domain.job_lifecycle import JobStatus, transition
 from kusanagi_nerv.domain.jobs import Job
-from kusanagi_nerv.repositories.jobs import JobRepository, RepositoryUnavailable
+from kusanagi_nerv.repositories.jobs import (
+    IdempotencyConflict,
+    JobRepository,
+    RepositoryUnavailable,
+)
 from kusanagi_nerv.repositories.postgres import PostgresJobRepository
 
 
@@ -64,8 +68,8 @@ def create_app(
             "Learning API with a fixed test tenant. Jobs are committed to PostgreSQL "
             "before acceptance and survive API restarts. A separate controller can "
             "simulate CPU jobs; no model training is performed yet. "
-            "Each POST creates a new job, including requests with "
-            "Idempotency-Key. Tests may explicitly inject an in-memory repository."
+            "Idempotency-Key deduplicates admission within a tenant. Cancellation "
+            "records intent before confirming worker termination."
         ),
         lifespan=lifespan,
     )
@@ -80,6 +84,18 @@ def create_app(
             )
         )
         return JSONResponse(status_code=503, content=body.model_dump(mode="json"))
+
+    @app.exception_handler(IdempotencyConflict)
+    async def idempotency_error(
+        request: Request, exc: IdempotencyConflict
+    ) -> JSONResponse:
+        body = ErrorResponse(
+            error=ApiError(
+                code="idempotency_conflict",
+                message="Idempotency key has a different payload",
+            )
+        )
+        return JSONResponse(status_code=409, content=body.model_dump(mode="json"))
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(
@@ -124,7 +140,14 @@ def create_app(
                     }
                 },
             },
-            422: {"model": ErrorResponse, "description": "Invalid job specification"},
+            409: {
+                "model": ErrorResponse,
+                "description": "Key already used for a different payload",
+            },
+            422: {
+                "model": ErrorResponse,
+                "description": "Invalid job specification or key",
+            },
             503: {
                 "model": ErrorResponse,
                 "description": "Storage operation could not be confirmed",
@@ -137,7 +160,26 @@ def create_app(
         response: Response,
         jobs: Annotated[JobRepository, Depends(get_repository)],
         tenant_id: Annotated[str, Depends(get_tenant_id)],
+        idempotency_key: Annotated[
+            str | None,
+            Header(
+                alias="Idempotency-Key",
+                min_length=1,
+                max_length=255,
+                pattern=r"^[!-~]+$",
+            ),
+        ] = None,
     ) -> JobAccepted:
+        if len(request.headers.getlist("Idempotency-Key")) > 1:
+            raise RequestValidationError(
+                [
+                    {
+                        "loc": ("header", "Idempotency-Key"),
+                        "type": "value_error",
+                        "msg": "Exactly one Idempotency-Key header is allowed",
+                    }
+                ]
+            )
         now = datetime.now(UTC)
         job = Job(
             job_id=uuid4(),
@@ -147,7 +189,7 @@ def create_app(
             created_at=now,
             updated_at=now,
         )
-        await jobs.add(job)
+        job = await jobs.admit(job, idempotency_key=idempotency_key)
         response.headers["Location"] = request.url_for(
             "get_job", job_id=str(job.job_id)
         ).path
@@ -174,6 +216,32 @@ def create_app(
                 error=ApiError(code="job_not_found", message="Job not found")
             )
             return JSONResponse(status_code=404, content=body.model_dump(mode="json"))
+        return JobView.from_job(job)
+
+    @app.post(
+        "/v1/jobs/{job_id}/cancel",
+        response_model=JobView,
+        summary="Request cancellation; terminal outcomes require execution evidence",
+        responses={
+            202: {"model": JobView, "description": "Cancellation intent recorded"},
+            404: {"model": ErrorResponse, "description": "Unknown or other-tenant job"},
+            422: {"model": ErrorResponse, "description": "Job ID is not a UUID"},
+            503: {"model": ErrorResponse, "description": "Storage unavailable"},
+        },
+    )
+    async def cancel_job(
+        job_id: UUID,
+        response: Response,
+        jobs: Annotated[JobRepository, Depends(get_repository)],
+        tenant_id: Annotated[str, Depends(get_tenant_id)],
+    ) -> JobView | JSONResponse:
+        job = await jobs.request_cancel(tenant_id=tenant_id, job_id=job_id)
+        if job is None:
+            body = ErrorResponse(
+                error=ApiError(code="job_not_found", message="Job not found")
+            )
+            return JSONResponse(status_code=404, content=body.model_dump(mode="json"))
+        response.status_code = 202 if job.status == JobStatus.CANCELLING else 200
         return JobView.from_job(job)
 
     return app

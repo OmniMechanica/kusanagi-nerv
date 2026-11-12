@@ -17,6 +17,12 @@ MLP-003 adds an `integration` marker and a separate PostgreSQL CI service job. F
 
 ## Non-flaky testing principles
 
+MLP-005 adds [policy races](../../tests/integration/test_job_policies.py): separate
+transactions synchronize before conflicting admission/claim/cancel operations;
+events delay an old dispatch until cancellation has been confirmed. Backoff tests
+persist jitter once and explicitly make deadlines due in their disposable DB.
+The API crash test also repeats the same idempotency key through a fresh process.
+
 MLP-004 extends the real DB suite with claims synchronized inside two transactions,
 locked-row skipping, stale owner/epoch/expiry fencing (including a blocked writer),
 durable identity across unknown submit outcomes, and actual controller-process

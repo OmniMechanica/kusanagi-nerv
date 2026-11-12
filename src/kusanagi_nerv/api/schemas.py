@@ -84,6 +84,8 @@ class JobView(BaseModel):
     error: str | None
     created_at: datetime
     updated_at: datetime
+    requested_cancel_at: datetime | None
+    retry_not_before: datetime | None
 
     @classmethod
     def from_job(cls, job: Job) -> Self:
@@ -108,6 +110,8 @@ class JobView(BaseModel):
             error=job.error,
             created_at=job.created_at,
             updated_at=job.updated_at,
+            requested_cancel_at=job.requested_cancel_at,
+            retry_not_before=job.retry_not_before,
         )
 
 
@@ -118,7 +122,12 @@ class ValidationIssue(BaseModel):
 
 
 class ApiError(BaseModel):
-    code: Literal["validation_error", "job_not_found", "storage_unavailable"]
+    code: Literal[
+        "validation_error",
+        "job_not_found",
+        "storage_unavailable",
+        "idempotency_conflict",
+    ]
     message: str
     details: list[ValidationIssue] = Field(default_factory=list)
 

@@ -8,7 +8,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kusanagi_nerv.db.models import SimulatedExecutionRow
-from kusanagi_nerv.domain.execution import Claim, ExecutionStatus
+from kusanagi_nerv.domain.execution import Claim, ExecutionObservation, ExecutionStatus
 from kusanagi_nerv.repositories.transactions import TransactionalRepository
 
 
@@ -24,26 +24,29 @@ class SimulatedExecutor(TransactionalRepository):
             raise ValueError("Simulation duration must be finite and in [0, 3600]")
         self._duration = timedelta(seconds=duration_seconds)
 
-    async def lookup(self, submission_id: str) -> ExecutionStatus:
+    async def lookup(self, submission_id: str) -> ExecutionObservation:
         async with self._transaction() as session:
             row = await session.scalar(
-                select(SimulatedExecutionRow).where(
-                    SimulatedExecutionRow.submission_id == submission_id
-                )
+                select(SimulatedExecutionRow)
+                .where(SimulatedExecutionRow.submission_id == submission_id)
+                .with_for_update()
             )
             if row is None:
-                return ExecutionStatus.NOT_FOUND
+                return ExecutionObservation(ExecutionStatus.NOT_FOUND)
+            if row.cancelled_at is not None:
+                return ExecutionObservation(ExecutionStatus.CANCELLED)
+            # Serialize time-derived completion with an in-flight cancellation.
             now = await session.scalar(select(func.clock_timestamp()))
-            return (
+            return ExecutionObservation(
                 ExecutionStatus.SUCCEEDED
-                if now >= row.finish_at
+                if row.finish_at is not None and now >= row.finish_at
                 else ExecutionStatus.RUNNING
             )
 
-    async def submit(self, claim: Claim) -> ExecutionStatus:
+    async def submit(self, claim: Claim) -> ExecutionObservation:
         # The controller filters GPU requests before creating any attempt.
         if claim.job.spec.resources.gpus > self.max_gpus:
-            return ExecutionStatus.REJECTED
+            return ExecutionObservation(ExecutionStatus.REJECTED)
         async with self._transaction() as session:
             now = await session.scalar(select(func.clock_timestamp()))
             await session.execute(
@@ -57,3 +60,28 @@ class SimulatedExecutor(TransactionalRepository):
             )
         # State lives outside the controller process; restart can reconcile it.
         return await self.lookup(claim.submission_id)
+
+    async def cancel(self, submission_id: str) -> ExecutionObservation:
+        async with self._transaction() as session:
+            # A missing identity gets a durable tombstone. ON CONFLICT serializes
+            # this with any in-flight submit; future submits cannot overwrite it.
+            await session.execute(
+                insert(SimulatedExecutionRow)
+                .values(
+                    submission_id=submission_id,
+                    cancelled_at=func.clock_timestamp(),
+                )
+                .on_conflict_do_nothing(index_elements=["submission_id"])
+            )
+            row = await session.scalar(
+                select(SimulatedExecutionRow)
+                .where(SimulatedExecutionRow.submission_id == submission_id)
+                .with_for_update()
+            )
+            assert row is not None
+            now = await session.scalar(select(func.clock_timestamp()))
+            if row.cancelled_at is None:
+                if row.finish_at is not None and now >= row.finish_at:
+                    return ExecutionObservation(ExecutionStatus.SUCCEEDED)
+                row.cancelled_at = now
+            return ExecutionObservation(ExecutionStatus.CANCELLED)

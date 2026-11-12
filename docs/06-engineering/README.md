@@ -4,6 +4,7 @@
 - [Repository bootstrap before MLP-001](bootstrap.md)
 - [PostgreSQL setup, migrations and integration checks](postgres.md)
 - [Controller ownership, simulation and crash recovery](controller.md)
+- [Idempotent requests, retry budgets and cancellation races](job-policies.md)
 - [Testing strategy and non-flaky integration tests](testing-strategy.md)
 - [Definition of Done](definition-of-done.md)
 - [Risk register and mitigations](risk-register.md)

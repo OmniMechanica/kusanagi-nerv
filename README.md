@@ -63,8 +63,9 @@ the job. The [API contract](docs/01-product/api-contracts.md) documents validati
 limits and typed `404`/`422`/`503` errors.
 
 This increment uses one fixed **test tenant**, with no authentication. Jobs are
-committed to PostgreSQL before acceptance and survive API restarts. Every POST
-still creates a new job, even with the same `Idempotency-Key`. Without a controller,
+committed to PostgreSQL before acceptance and survive API restarts. With
+`Idempotency-Key`, the same tenant/key/payload returns the existing job; a changed
+payload returns `409`. Without a key each POST creates a new job. Without a controller,
 accepted jobs stay queued with `attempt: 0`. See the [PostgreSQL guide](docs/06-engineering/postgres.md)
 for migration, concurrency and failure semantics, including uncertain commits.
 
@@ -83,8 +84,9 @@ attempt; there is no CPU fallback. A second controller can run in another termin
 claims are coordinated in PostgreSQL. After a controller crash, recovery waits for
 its lease to expire (30 seconds by default), then reconciles the same submission.
 Read the [controller guide](docs/06-engineering/controller.md) for ownership,
-failure behavior, timing, limits and reproducible tests. Idempotency, retries and
-cancellation follow in MLP-005; Ray and real training follow later.
+failure behavior, timing, limits and reproducible tests. MLP-005 adds
+[idempotency, bounded retries and cancellation](docs/06-engineering/job-policies.md).
+Ray and real training follow later.
 
 ## Implemented increments
 
@@ -97,13 +99,16 @@ cancellation follow in MLP-005; Ray and real training follow later.
   [API contract tests](tests/api/test_jobs.py). PR #5 merged; learning drill pending.
 - [MLP-003](docs/03-planning/tasks/MLP-003.md): transactional PostgreSQL
   [repository](src/kusanagi_nerv/repositories/postgres.py), explicit Alembic migration,
-  version-guarded state updates and real process-crash/concurrency tests. PR #6 merged
-  into the MLP-002 branch; carried into this branch for integration into `main`.
+  version-guarded state updates and real process-crash/concurrency tests. Integrated
+  into `main` through PR #7; learning drill pending.
 - [MLP-004](docs/03-planning/tasks/MLP-004.md): separate
   [controller](src/kusanagi_nerv/controller/service.py), durable attempts,
-  fenced leases and a persistent simulated executor. In review; learning drill pending.
+  fenced leases and a persistent simulated executor. PR #7 merged; learning drill pending.
+- [MLP-005](docs/03-planning/tasks/MLP-005.md): tenant-scoped idempotent admission,
+  persisted retry backoff/budget and cancellation with dispatch revocation in the
+  simulated adapter. In review; learning drill pending.
 
-The full suite has 204 tests: 165 fast cases and 39 PostgreSQL integration cases.
+The full suite has 244 tests: 187 fast cases and 57 PostgreSQL integration cases.
 See the [progress journal](docs/03-planning/progress.md)
 for local verification, hosted checks and scope. Static analysis with mypy/Pyright
 remains a P1 follow-up; runtime schema validation and Ruff are enforced now.
