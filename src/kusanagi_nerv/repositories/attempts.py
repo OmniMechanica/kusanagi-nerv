@@ -1,15 +1,23 @@
 """PostgreSQL claim/recovery and fenced observations, with no executor I/O."""
 
 import math
+import random
+from collections.abc import Callable
 from datetime import timedelta
 from uuid import uuid4
 
-from sqlalchemy import func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kusanagi_nerv.db.models import AttemptRow, JobRow
-from kusanagi_nerv.domain.execution import Claim, ExecutionStatus, LeaseLost
+from kusanagi_nerv.domain.execution import (
+    Claim,
+    ExecutionStatus,
+    FailureKind,
+    LeaseLost,
+)
 from kusanagi_nerv.domain.job_lifecycle import JobStatus, transition
+from kusanagi_nerv.domain.retries import RetryPolicy
 from kusanagi_nerv.repositories.postgres import to_job
 from kusanagi_nerv.repositories.transactions import TransactionalRepository
 
@@ -32,6 +40,17 @@ def to_claim(job: JobRow, attempt: AttemptRow) -> Claim:
 
 
 class AttemptRepository(TransactionalRepository):
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        *,
+        retry_policy: RetryPolicy | None = None,
+        jitter: Callable[[], float] = random.random,
+    ) -> None:
+        super().__init__(sessions)
+        self._retry_policy = retry_policy or RetryPolicy()
+        self._jitter = jitter
+
     async def claim_next(
         self, *, owner: str, executor_kind: str, lease_seconds: float, max_gpus: int = 0
     ) -> Claim | None:
@@ -47,7 +66,9 @@ class AttemptRepository(TransactionalRepository):
                 select(JobRow)
                 .join(AttemptRow, AttemptRow.job_id == JobRow.job_id)
                 .where(
-                    JobRow.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+                    JobRow.status.in_(
+                        [JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.CANCELLING]
+                    ),
                     AttemptRow.finished_at.is_(None),
                     AttemptRow.executor_kind == executor_kind,
                     AttemptRow.lease_expires_at <= func.clock_timestamp(),
@@ -79,11 +100,38 @@ class AttemptRepository(TransactionalRepository):
                 job = await session.scalar(
                     select(JobRow)
                     .where(
-                        JobRow.status == JobStatus.QUEUED,
-                        JobRow.attempt == 0,
+                        JobRow.requested_cancel_at.is_(None),
+                        or_(
+                            and_(
+                                JobRow.status == JobStatus.QUEUED, JobRow.attempt == 0
+                            ),
+                            and_(
+                                JobRow.status == JobStatus.RETRYING,
+                                JobRow.retry_not_before <= func.clock_timestamp(),
+                                JobRow.attempt
+                                <= JobRow.spec_json["max_retries"].as_integer(),
+                                select(AttemptRow.attempt_id)
+                                .where(
+                                    AttemptRow.job_id == JobRow.job_id,
+                                    AttemptRow.attempt_no == JobRow.attempt,
+                                    AttemptRow.finished_at.is_not(None),
+                                    AttemptRow.last_observation.in_(
+                                        [
+                                            ExecutionStatus.FAILED,
+                                            ExecutionStatus.REJECTED,
+                                        ]
+                                    ),
+                                    AttemptRow.failure_kind == FailureKind.TRANSIENT,
+                                )
+                                .exists(),
+                            ),
+                        ),
                         JobRow.spec_json["resources"]["gpus"].as_integer() <= max_gpus,
                         ~select(AttemptRow.attempt_id)
-                        .where(AttemptRow.job_id == JobRow.job_id)
+                        .where(
+                            AttemptRow.job_id == JobRow.job_id,
+                            AttemptRow.finished_at.is_(None),
+                        )
                         .exists(),
                     )
                     .order_by(JobRow.created_at, JobRow.job_id)
@@ -97,7 +145,7 @@ class AttemptRepository(TransactionalRepository):
                 attempt = AttemptRow(
                     attempt_id=attempt_id,
                     job_id=job.job_id,
-                    attempt_no=1,
+                    attempt_no=job.attempt + 1,
                     submission_id=f"kusanagi-{attempt_id}",
                     executor_kind=executor_kind,
                     lease_owner=owner,
@@ -109,7 +157,12 @@ class AttemptRepository(TransactionalRepository):
                     last_observation=ExecutionStatus.UNKNOWN,
                 )
                 session.add(attempt)
-                job.attempt = 1
+                if job.status == JobStatus.RETRYING:
+                    job.status = transition(JobStatus.RETRYING, JobStatus.QUEUED)
+                job.attempt += 1
+                job.retry_not_before = None
+                job.waiting_reason = None
+                job.error = None
                 job.state_version += 1
                 job.updated_at = now
             await session.flush()
@@ -123,10 +176,21 @@ class AttemptRepository(TransactionalRepository):
         job = await session.scalar(
             select(JobRow).where(JobRow.job_id == claim.job.job_id).with_for_update()
         )
+        # Cancellation advances the job version without revoking its attempt.
+        # The current lease owner consumes that newer intent under this lock;
+        # late observations may finish it but can never resume normal dispatch.
         if (
             job is None
-            or job.state_version != claim.job.state_version
-            or job.status not in (JobStatus.QUEUED, JobStatus.RUNNING)
+            or (
+                job.state_version != claim.job.state_version
+                and not (
+                    job.status == JobStatus.CANCELLING
+                    and job.requested_cancel_at is not None
+                    and job.state_version > claim.job.state_version
+                )
+            )
+            or job.status
+            not in (JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.CANCELLING)
         ):
             raise LeaseLost("Job changed or is no longer executable")
         values = {"heartbeat_at": func.clock_timestamp()}
@@ -158,9 +222,17 @@ class AttemptRepository(TransactionalRepository):
             job, attempt = await self._owned(session, claim, duration=duration)
             return to_claim(job, attempt)
 
-    async def observe(self, claim: Claim, status: ExecutionStatus) -> Claim | None:
+    async def observe(
+        self,
+        claim: Claim,
+        status: ExecutionStatus,
+        *,
+        failure_kind: FailureKind = FailureKind.PERMANENT,
+    ) -> Claim | None:
         if not isinstance(status, ExecutionStatus):
             raise TypeError("Expected ExecutionStatus")
+        if not isinstance(failure_kind, FailureKind):
+            raise TypeError("Expected FailureKind")
         async with self._transaction() as session:
             job, attempt = await self._owned(session, claim)
             now = await session.scalar(select(func.clock_timestamp()))
@@ -190,17 +262,37 @@ class AttemptRepository(TransactionalRepository):
                 ExecutionStatus.SUCCEEDED,
                 ExecutionStatus.FAILED,
                 ExecutionStatus.REJECTED,
+                ExecutionStatus.CANCELLED,
             )
             if terminal:
-                new_status = (
-                    JobStatus.SUCCEEDED
-                    if status == ExecutionStatus.SUCCEEDED
-                    else JobStatus.FAILED
-                )
+                cancelling = job.requested_cancel_at is not None
+                failed = status in (ExecutionStatus.FAILED, ExecutionStatus.REJECTED)
+                if failed:
+                    attempt.failure_kind = failure_kind
+                if status == ExecutionStatus.SUCCEEDED:
+                    new_status = JobStatus.SUCCEEDED
+                elif cancelling and status in (
+                    ExecutionStatus.CANCELLED,
+                    ExecutionStatus.REJECTED,
+                ):
+                    new_status = JobStatus.CANCELLED
+                elif (
+                    not cancelling
+                    and failed
+                    and failure_kind == FailureKind.TRANSIENT
+                    and job.attempt <= job.spec_json["max_retries"]
+                ):
+                    new_status = JobStatus.RETRYING
+                    job.retry_not_before = now + timedelta(
+                        seconds=self._retry_policy.delay(job.attempt, self._jitter())
+                    )
+                    job.waiting_reason = "retry_backoff"
+                else:
+                    new_status = JobStatus.FAILED
                 job.status = transition(JobStatus(job.status), new_status)
                 job.error = (
                     None
-                    if new_status == JobStatus.SUCCEEDED
+                    if new_status in (JobStatus.SUCCEEDED, JobStatus.CANCELLED)
                     else f"executor_{status.value}"
                 )
                 attempt.finished_at = now

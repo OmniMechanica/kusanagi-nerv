@@ -41,13 +41,18 @@ class JobRow(Base):
         UniqueConstraint("tenant_id", "idempotency_key", name="uq_jobs_tenant_key"),
         Index("ix_jobs_status_created_at", "status", "created_at"),
         Index("ix_jobs_tenant_created_at_id", "tenant_id", "created_at", "id"),
+        Index(
+            "ix_jobs_retry_due",
+            "retry_not_before",
+            postgresql_where=text("status = 'retrying'"),
+        ),
     )
 
     job_id: Mapped[UUID] = mapped_column("id", primary_key=True)
     tenant_id: Mapped[str] = mapped_column(String(128))
     spec_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
     payload_hash: Mapped[str] = mapped_column(String(64))
-    # Reserved for MLP-005. The current API leaves this NULL and does not deduplicate.
+    # NULL preserves unkeyed admission; non-NULL keys are unique within the tenant.
     idempotency_key: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(16))
     state_version: Mapped[int] = mapped_column(server_default=text("0"))
@@ -64,6 +69,10 @@ class JobRow(Base):
     result_model_version: Mapped[str | None] = mapped_column(String(128))
     waiting_reason: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
+    requested_cancel_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    retry_not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AttemptRow(Base):
@@ -76,13 +85,17 @@ class AttemptRow(Base):
         CheckConstraint("length(lease_owner) > 0", name="ck_attempts_owner"),
         CheckConstraint(
             "last_observation IN ('not_found', 'unknown', 'pending', 'running', "
-            "'succeeded', 'failed', 'rejected')",
+            "'succeeded', 'failed', 'rejected', 'cancelled')",
             name="ck_attempts_observation",
         ),
         CheckConstraint(
             "(finished_at IS NOT NULL) = "
-            "(last_observation IN ('succeeded', 'failed', 'rejected'))",
+            "(last_observation IN ('succeeded', 'failed', 'rejected', 'cancelled'))",
             name="ck_attempts_terminal",
+        ),
+        CheckConstraint(
+            "failure_kind IN ('transient', 'permanent')",
+            name="ck_attempts_failure_kind",
         ),
         Index(
             "uq_attempts_unfinished",
@@ -113,6 +126,7 @@ class AttemptRow(Base):
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_kind: Mapped[str | None] = mapped_column(String(16))
 
 
 class SimulatedExecutionRow(Base):
@@ -121,8 +135,14 @@ class SimulatedExecutionRow(Base):
     __tablename__ = "simulated_executions"
     __table_args__ = (
         CheckConstraint("finish_at >= accepted_at", name="ck_simulation_duration"),
+        CheckConstraint(
+            "(accepted_at IS NOT NULL AND finish_at IS NOT NULL) OR "
+            "(accepted_at IS NULL AND finish_at IS NULL AND cancelled_at IS NOT NULL)",
+            name="ck_simulation_identity",
+        ),
     )
 
     submission_id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    finish_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finish_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

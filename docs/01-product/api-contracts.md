@@ -2,15 +2,15 @@
 
 **API version:** `/v1`. This is a target contract and will evolve through ADRs.
 
-## Implemented through MLP-004
+## Implemented through MLP-005
 
-Only job creation and lookup are implemented, plus FastAPI's `/docs` and `/openapi.json`. The app uses an injected PostgreSQL repository and the fixed `local-test-tenant` identity; memory is an explicit test adapter. This is a local learning configuration, not production authentication; no `X-Test-Tenant` header is enabled. Tests override the internal tenant dependency to verify isolation. `tenant_id` and all other extra request fields are rejected, including within `resources`.
+Job creation, lookup and cancellation are implemented, plus FastAPI's `/docs` and `/openapi.json`. The app uses an injected PostgreSQL repository and the fixed `local-test-tenant` identity; memory is an explicit test adapter. This is a local learning configuration, not production authentication; no `X-Test-Tenant` header is enabled. Tests override the internal tenant dependency to verify isolation. `tenant_id` and all other extra request fields are rejected, including within `resources`.
 
 - POST commits a queued job in PostgreSQL before returning `202` with a UUID and relative `Location`; it does not perform training or schedule a background task. GET returns the submitted specification, requested resources, status, timestamps and the result/error fields below. Admission initializes `attempt: 0` and null result/error/waiting fields. With the separate MLP-004 controller running, GET can already show an attempt or a later state, even on the first read; the acceptance response still reports queued admission.
-- Every POST creates a new job, including repeated `Idempotency-Key` requests. Idempotency and `409` behavior below are targets for MLP-005, not guarantees of this increment.
-- Jobs survive API restarts; processes using the same database share the ledger. Migrations run explicitly before startup. MLP-004 adds simulated CPU dispatch and fenced observations. It creates no real model/artifacts; GPU requests stay queued. Retry policy and guarded cancellation remain MLP-005.
+- Optional `Idempotency-Key` deduplicates by tenant and canonical validated specification. Same payload returns the original `202` admission body/Location; a different payload returns `409 idempotency_conflict`. Keys are 1–255 visible ASCII characters, case-sensitive, with no whitespace or expiry. Duplicate headers are invalid. Unkeyed POSTs create separate jobs. Replayed admission does not change current job state; use GET for that state.
+- Jobs survive API restarts; processes using the same database share the ledger. Migrations run explicitly before startup. MLP-004 adds simulated CPU dispatch and fenced observations. It creates no real model/artifacts; GPU requests stay queued. MLP-005 adds persisted retry budgets/backoff and guarded cancellation; GET also exposes `requested_cancel_at` and `retry_not_before`.
 - Unknown and other-tenant UUIDs produce the same `404` envelope; a malformed UUID produces `422`.
-- Database failures produce a sanitized `503 storage_unavailable`. An unconfirmed write is never acknowledged as `202`, but a lost response/connection during commit can leave the actual outcome unknown. There is no automatic write retry; duplicate POSTs remain possible until MLP-005. See [storage failure semantics](../06-engineering/postgres.md#failure-behavior-and-remaining-scope).
+- Database failures produce a sanitized `503 storage_unavailable`. An unconfirmed write is never acknowledged as `202`, but a lost response/connection during commit can leave the actual outcome unknown. There is no automatic write retry; repeat the same tenant/key/payload to resolve an uncertain commit. Repeating an unkeyed POST can still duplicate the logical job. See [storage failure semantics](../06-engineering/postgres.md#failure-behavior-and-remaining-scope).
 
 ### Input validation
 
@@ -29,7 +29,7 @@ Identifier validation is syntactic; this milestone does not resolve a model/data
 
 ### Error envelope
 
-Documented `404`, `422` and `503` responses use `ErrorResponse`. Clients should use `error.code` and detail locations; human-readable validation messages can evolve with Pydantic.
+Documented `404`, `409`, `422` and `503` responses use `ErrorResponse`. Clients should use `error.code` and detail locations; human-readable validation messages can evolve with Pydantic.
 
 ```json
 {
@@ -49,7 +49,7 @@ For `503`, `code` is `storage_unavailable`, `message` is `Job storage is unavail
 
 ## Create job
 
-Target contract (including idempotency from MLP-005): `POST /v1/jobs` with `Idempotency-Key` and JSON:
+Implemented contract: `POST /v1/jobs` with optional `Idempotency-Key` and JSON:
 
 ```json
 {
@@ -67,7 +67,7 @@ Target contract (including idempotency from MLP-005): `POST /v1/jobs` with `Idem
 - Invalid body: `422 Unprocessable Entity` (Pydantic validation).
 - `tenant_id` is not a CreateJob body field; reject it as an extra field. Resolve tenant ownership from authenticated identity. Until MLP-017, a fixed test tenant or an explicitly test-only `X-Test-Tenant` header supplies the same internal tenant context; neither is production authentication.
 
-Implement validation and create/get in MLP-002, persistence in MLP-003, and durable idempotency/cancellation in MLP-005. Partial milestones must record which target behaviors are not implemented yet.
+Validation/create/get (MLP-002), persistence (MLP-003), and durable idempotency/cancellation (MLP-005) are implemented. List/model/health/metrics operations below remain target contracts for later milestones.
 
 ## Job operations
 
@@ -102,7 +102,9 @@ Implement validation and create/get in MLP-002, persistence in MLP-003, and dura
   "waiting_reason": null,
   "error": null,
   "created_at": "2026-11-09T10:00:00Z",
-  "updated_at": "2026-11-09T10:00:02Z"
+  "updated_at": "2026-11-09T10:00:02Z",
+  "requested_cancel_at": null,
+  "retry_not_before": null
 }
 ```
 
@@ -117,7 +119,9 @@ Cancel behavior:
 - Work may exist remotely or a submission may still arrive: persist cancellation intent and return `202` with `CANCELLING`; repeated requests do not dispatch new work.
 - Already terminal job: return `200` with its unchanged state. This is an idempotent API operation, not a terminal-state self-transition.
 
-Cancellation can race with success. Guarded DB writes and authoritative attempt checks commit the observed outcome according to the [lifecycle guards](job-lifecycle.md#guards-for-persistent-execution).
+The cancel response is `JobView`; repeated cancellation preserves the original intent timestamp. `409` uses code `idempotency_conflict`, message `Idempotency key has a different payload`, and empty details. No request key or existing payload is echoed.
+
+See [implemented retry and cancellation policies](../06-engineering/job-policies.md) for failure classification, jitter and the adapter revocation contract. Cancellation can race with success. Guarded DB writes and authoritative attempt checks commit the observed outcome according to the [lifecycle guards](job-lifecycle.md#guards-for-persistent-execution).
 
 ## Model registration, deployment and prediction (MLP-011)
 

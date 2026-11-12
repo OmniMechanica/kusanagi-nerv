@@ -248,14 +248,15 @@ def test_new_app_does_not_share_in_memory_jobs(payload: dict[str, Any]) -> None:
         assert second.get(location).status_code == 404
 
 
-def test_idempotency_is_explicitly_not_implemented(
+def test_same_idempotency_key_reuses_admission(
     client: TestClient, payload: dict[str, Any]
 ) -> None:
     headers = {"Idempotency-Key": "same-request"}
     first = client.post("/v1/jobs", json=payload, headers=headers)
     second = client.post("/v1/jobs", json=payload, headers=headers)
     assert first.status_code == second.status_code == 202
-    assert first.json()["job_id"] != second.json()["job_id"]
+    assert first.json() == second.json()
+    assert first.headers["Location"] == second.headers["Location"]
 
 
 class RecordingRepository:
@@ -263,6 +264,10 @@ class RecordingRepository:
 
     def __init__(self) -> None:
         self.jobs: list[Job] = []
+
+    async def admit(self, job: Job, *, idempotency_key: str | None = None) -> Job:
+        await self.add(job)
+        return job
 
     async def add(self, job: Job) -> None:
         self.jobs.append(job)
@@ -334,7 +339,7 @@ def test_openapi_documents_the_implemented_contract(client: TestClient) -> None:
     schema = result.json()
     post = schema["paths"]["/v1/jobs"]["post"]
     get = schema["paths"]["/v1/jobs/{job_id}"]["get"]
-    assert set(post["responses"]) == {"202", "422", "503"}
+    assert set(post["responses"]) == {"202", "409", "422", "503"}
     assert set(get["responses"]) == {"200", "404", "422", "503"}
     assert "Location" in post["responses"]["202"]["headers"]
     for operation, status, model in (
@@ -391,3 +396,98 @@ def test_default_app_requires_explicit_database_configuration(
     monkeypatch.delenv("KUSANAGI_DATABASE_URL", raising=False)
     with pytest.raises(ValueError, match="Set KUSANAGI_DATABASE_URL"):
         create_app()
+
+
+def test_key_payload_conflict_and_unkeyed_requests(
+    client: TestClient, payload: dict[str, Any]
+) -> None:
+    headers = {"Idempotency-Key": "request-1"}
+    original = client.post("/v1/jobs", json=payload, headers=headers)
+    different = {**payload, "epochs": payload["epochs"] + 1}
+    conflict = client.post("/v1/jobs", json=different, headers=headers)
+    assert conflict.status_code == 409
+    assert conflict.json() == {
+        "error": {
+            "code": "idempotency_conflict",
+            "message": "Idempotency key has a different payload",
+            "details": [],
+        }
+    }
+    assert "Location" not in conflict.headers
+    unkeyed = [client.post("/v1/jobs", json=payload).json()["job_id"] for _ in range(2)]
+    assert len({original.json()["job_id"], *unkeyed}) == 3
+
+
+@pytest.mark.parametrize("key", ["", " ", "has space", "a\tb", "x" * 256])
+def test_invalid_idempotency_key_is_422(
+    client: TestClient, payload: dict[str, Any], key: str
+) -> None:
+    response = client.post("/v1/jobs", json=payload, headers={"Idempotency-Key": key})
+    assert response.status_code == 422
+    assert response.json()["error"]["details"][0]["location"] == [
+        "header",
+        "Idempotency-Key",
+    ]
+
+
+def test_duplicate_key_headers_are_rejected(
+    client: TestClient, payload: dict[str, Any]
+) -> None:
+    response = client.post(
+        "/v1/jobs",
+        json=payload,
+        headers=[
+            ("Idempotency-Key", "first"),
+            ("Idempotency-Key", "second"),
+        ],
+    )
+    assert response.status_code == 422
+
+
+def test_cancel_undispatched_job_is_idempotent_and_replay_preserves_terminal_state(
+    client: TestClient, payload: dict[str, Any]
+) -> None:
+    headers = {"Idempotency-Key": "cancel-me"}
+    original = client.post("/v1/jobs", json=payload, headers=headers)
+    location = original.headers["Location"]
+    cancelled = client.post(f"{location}/cancel")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert cancelled.json()["attempt"] == 0
+    assert cancelled.json()["requested_cancel_at"] is not None
+    assert client.post(f"{location}/cancel").json() == cancelled.json()
+    replay = client.post("/v1/jobs", json=payload, headers=headers)
+    assert replay.status_code == 202 and replay.json() == original.json()
+    assert client.get(location).json() == cancelled.json()
+
+
+def test_cancel_tenant_isolation_and_same_key_in_different_tenants(
+    payload: dict[str, Any],
+) -> None:
+    app = create_app(InMemoryJobRepository())
+    with TestClient(app) as client:
+        app.dependency_overrides[get_tenant_id] = lambda: "tenant-a"
+        first = client.post(
+            "/v1/jobs", json=payload, headers={"Idempotency-Key": "shared"}
+        )
+        app.dependency_overrides[get_tenant_id] = lambda: "tenant-b"
+        second = client.post(
+            "/v1/jobs", json=payload, headers={"Idempotency-Key": "shared"}
+        )
+        assert first.json()["job_id"] != second.json()["job_id"]
+        hidden = client.post(f"{first.headers['Location']}/cancel")
+        unknown = client.post(f"/v1/jobs/{uuid4()}/cancel")
+        assert hidden.status_code == unknown.status_code == 404
+        assert hidden.json() == unknown.json()
+        assert client.post("/v1/jobs/not-a-uuid/cancel").status_code == 422
+
+
+def test_cancel_storage_failure_is_sanitized(payload: dict[str, Any]) -> None:
+    class BrokenCancel(InMemoryJobRepository):
+        async def request_cancel(self, *, tenant_id: str, job_id: UUID) -> Job | None:
+            raise RepositoryUnavailable("private driver message")
+
+    with TestClient(create_app(BrokenCancel())) as client:
+        response = client.post(f"/v1/jobs/{uuid4()}/cancel")
+    assert response.status_code == 503
+    assert "private" not in response.text

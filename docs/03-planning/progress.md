@@ -1,7 +1,7 @@
 # Progress tracker and evidence journal
 
-**Last updated:** 2026-11-11  
-**Status:** MLP-001–003 have merged PRs (MLP-003 requires integration from its merged feature branch into main). MLP-004 In review — separate controller, durable attempts, fenced leases and simulated execution verified. Learning checkpoints remain pending; no real ML execution is claimed.
+**Last updated:** 2026-11-12  
+**Status:** MLP-001–004 are integrated into main through merged PRs; learning checkpoints remain pending. MLP-005 is In review with durable idempotency, bounded retries and confirmed cancellation in the simulator. MLP-006 onward remain Planned.
 
 ## Checkpoint gates
 
@@ -18,9 +18,9 @@ Gate D can proceed without full Gate C. Record deferred P1 work explicitly and l
 |---:|---|---|---|---|
 | 01 | MLP-001 | In review | [Lifecycle evidence](#2026-11-09--mlp-001--job-lifecycle-implementation), [merged PR #4](https://github.com/OmniMechanica/kusanagi-nerv/pull/4) | Technical review approved; finish learning checkpoint |
 | 02 | MLP-002 | In review | [API evidence](#2026-11-09--mlp-002--typed-job-api) | PR #5 merged into main; rehearse 202/async/durable-queue tradeoffs |
-| 03 | MLP-003 | In review | [PostgreSQL evidence](#2026-11-11--mlp-003--durable-postgresql-ledger) | PR #6 merged into MLP-002 branch; integrate into main and complete learning drill |
-| 04 | MLP-004 | In review | [Controller evidence](#2026-11-11--mlp-004--durable-controller-and-fenced-leases) | Review claim/recovery semantics and complete learning drill |
-| 05 | MLP-005 | Planned | — | — |
+| 03 | MLP-003 | In review | [PostgreSQL evidence](#2026-11-11--mlp-003--durable-postgresql-ledger) | Integrated into main via PR #7; complete learning drill |
+| 04 | MLP-004 | In review | [Controller evidence](#2026-11-11--mlp-004--durable-controller-and-fenced-leases) | PR #7 merged; complete claim/recovery learning drill |
+| 05 | MLP-005 | In review | [Policy evidence](#2026-11-12--mlp-005--idempotency-retries-and-cancellation) | Review concurrent outcomes and complete learning drill |
 | 06 | MLP-006 | Planned | — | — |
 | 07 | MLP-007 | Planned | — | — |
 | 08 | MLP-008 | Planned | — | — |
@@ -148,5 +148,24 @@ Gate D can proceed without full Gate C. Record deferred P1 work explicitly and l
 - Limits: one active attempt per controller; unresolved unknown work occupies that slot. No fairness, production auth/quotas, actual CPU/memory allocation, Ray, training or artifacts. GPU requests remain queued with zero attempts. Retry budgets, backoff, cancellation and HTTP idempotency remain MLP-005.
 - CI: the existing lint/tests/package and PostgreSQL integration jobs cover the new files/tests. Hosted outcomes are recorded in the implementation PR checks, separately from local evidence.
 - Next step: review MLP-004 and explain commit-before-dispatch, lease expiry versus worker termination, and why takeover preserves submission identity; then start MLP-005.
+
+## 2026-11-12 — MLP-005 — Idempotency, retries and cancellation
+
+- Status: In review; implementation and local verification complete, learner explanation pending. PR #7 merged MLP-004 and the preceding ledger into main as `8a13b3c`; this increment starts from that main commit.
+- Evidence: `TESTED-CPU` for real PostgreSQL transactions, migration and API process restart on macOS arm64. Runtime outcomes and injected failures are `SIMULATED`; no training, Ray, artifact or GPU execution is claimed.
+- Code: [admission/cancel storage](../../src/kusanagi_nerv/repositories/postgres.py), [attempt policies](../../src/kusanagi_nerv/repositories/attempts.py), [retry timing](../../src/kusanagi_nerv/domain/retries.py), [runtime observations](../../src/kusanagi_nerv/domain/execution.py), [simulation](../../src/kusanagi_nerv/executors/simulated.py), [migration](../../migrations/versions/0003_retry_cancel.py), [policy tests](../../tests/integration/test_job_policies.py).
+- Environment: same locked Python/dependency versions and PostgreSQL 18.6 image as MLP-004; no dependency additions.
+- With the local test URL exported, `.venv/bin/pytest -q --tb=short`: **244 passed in 37.32s** — 187 fast cases and 57 PostgreSQL integration cases.
+- Idempotency evidence: concurrent HTTP requests enter separate DB transactions via a barrier; equal payloads resolve to one job, different payloads yield one `202` and one `409`. The database unique constraint is inspected. Canonical defaults/numeric representations, tenant-scoped keys and a lost response after committed admission are covered. A real API process is killed and restarted before replaying the same key/Location.
+- Retry evidence: zero and two additional-attempt budgets terminate at their exact limits; each retry has a distinct attempt/submission identity and preserves the job ID. Selected jitter deadlines persist across new repository instances. Competing controllers create one due retry; stale observations cannot reschedule it. A controller-level transient failure then success path is covered.
+- Cancellation evidence: claim/cancel (initial and retry), final-observation/cancel and runtime-submit/cancel races use barriers; running/unknown accepted work stays `CANCELLING` until confirmation. Unknown/not-found stop outcomes do not consume retry budget or finalize cancellation. Cancellation during backoff or before transient failure suppresses retries. Already-terminal requests return unchanged state.
+- Late-submit evidence: an event holds the old owner's submit, cancellation is requested, its lease expires, and a replacement creates a durable runtime revocation record and confirms cancellation. Releasing the old submit returns cancelled without runtime acceptance; its stale ledger write is rejected. Another test verifies lookup waits for an uncommitted cancellation transaction, preserving consistent time-derived completion/stop outcomes.
+- Review correction: serialized simulator lookup with cancellation after identifying a possible read of pre-cancellation state while stop was committing. Added a targeted real-DB regression test; the final full suite includes that check.
+- Migration/build: explicit local upgrade succeeded; `alembic current` returned `0003_retry_cancel (head)` and `alembic check` found no drift. `uv build` produced wheel and source distribution. Integration tests cover repeated upgrade, existing job preservation and downgrade/upgrade only in owned disposable DBs.
+- Final verification/cleanup: Ruff lint and all 38 Python-file formatting checks passed; local documentation file links and whitespace checks passed, and the wheel includes the new policy modules. Zero disposable test databases and no API/controller test processes remained. The project PostgreSQL service was stopped with its named volume and migrated data retained.
+- Decision/tradeoff: optional request keys preserve unkeyed admission; keys and runtime revocation records currently have no expiry. Only confirmed transient execution failures can consume new attempts. Cancellation versions refresh the current lease holder under the job lock while attempt/owner/epoch/expiry guards remain mandatory.
+- Limits: fixed test tenant; one active attempt per controller; no fairness or real CPU/memory allocation. Unknown runtime outcomes may remain unresolved and occupy that slot. Ray must independently prove identity/revocation semantics in MLP-007; checkpoint resume and training remain later work. Static type checking remains the agreed P1 follow-up. Gate A and ticket Done status still require learner checkpoints.
+- CI: existing lint/tests/package and PostgreSQL jobs cover this increment; hosted outcomes are recorded in its PR checks, separately from local evidence.
+- Next step: review MLP-005 and explain request identity versus attempt identity, retryable execution failure versus transport uncertainty, and why a missing runtime job cannot alone confirm cancellation. Then proceed to MLP-006's isolated Ray Core tasks/actors exercise.
 
 The [backlog CSV](backlog.csv) also tracks ticket statuses and dependencies. Keep both consistent as tasks complete.

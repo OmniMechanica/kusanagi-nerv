@@ -14,7 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from kusanagi_nerv.controller.service import Controller, ControllerSettings
 from kusanagi_nerv.db.models import AttemptRow, JobRow, SimulatedExecutionRow
-from kusanagi_nerv.domain.execution import Claim, ExecutionStatus, LeaseLost
+from kusanagi_nerv.domain.execution import (
+    Claim,
+    ExecutionObservation,
+    ExecutionStatus,
+    LeaseLost,
+)
 from kusanagi_nerv.domain.job_lifecycle import JobStatus
 from kusanagi_nerv.domain.jobs import Job, JobResources, JobSpecification
 from kusanagi_nerv.executors.simulated import SimulatedExecutor
@@ -211,7 +216,7 @@ async def test_submission_intent_is_committed_before_dispatch_and_fast_success(
 ) -> None:
     original = executor.submit
 
-    async def submit(claim: Claim) -> ExecutionStatus:
+    async def submit(claim: Claim) -> ExecutionObservation:
         async with engine.connect() as connection:
             record = (await connection.execute(select(AttemptRow.__table__))).one()
             assert record.id == claim.attempt_id
@@ -241,7 +246,7 @@ async def test_lost_submit_reply_recovers_same_execution_without_new_attempt(
     original = executor.submit
     submissions = []
 
-    async def lose_reply(claim: Claim) -> ExecutionStatus:
+    async def lose_reply(claim: Claim) -> ExecutionObservation:
         submissions.append(claim.submission_id)
         await original(claim)
         raise TimeoutError("reply lost after acceptance")
@@ -277,8 +282,8 @@ async def test_confirmed_failure_finalizes_once_without_retry_policy(
     monkeypatch: pytest.MonkeyPatch,
     outcome: ExecutionStatus,
 ) -> None:
-    async def submit(claim: Claim) -> ExecutionStatus:
-        return outcome
+    async def submit(claim: Claim) -> ExecutionObservation:
+        return ExecutionObservation(outcome)
 
     monkeypatch.setattr(executor, "submit", submit)
     controller = Controller(store, executor)
@@ -300,7 +305,7 @@ async def test_unknown_lookup_does_not_dispatch_and_call_is_bounded(
     job: Job,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def lookup(submission_id: str) -> ExecutionStatus:
+    async def lookup(submission_id: str) -> ExecutionObservation:
         await asyncio.Event().wait()
         raise AssertionError("unreachable")
 
@@ -334,7 +339,7 @@ async def test_accepted_execution_disappearing_is_not_resubmitted_or_failed(
     controller = Controller(store, executor, owner=claim.owner)
     controller.claim = accepted
 
-    async def forbidden_submit(claim: Claim) -> ExecutionStatus:
+    async def forbidden_submit(claim: Claim) -> ExecutionObservation:
         raise AssertionError("must reconcile missing accepted execution")
 
     monkeypatch.setattr(executor, "submit", forbidden_submit)
@@ -354,11 +359,11 @@ async def test_lease_lost_during_external_call_cannot_commit_success(
 ) -> None:
     replacement = None
 
-    async def delayed_success(claim: Claim) -> ExecutionStatus:
+    async def delayed_success(claim: Claim) -> ExecutionObservation:
         nonlocal replacement
         await expire(engine)
         replacement = await claim_one(store, "controller-b")
-        return ExecutionStatus.SUCCEEDED
+        return ExecutionObservation(ExecutionStatus.SUCCEEDED)
 
     monkeypatch.setattr(executor, "submit", delayed_success)
     controller = Controller(store, executor)
@@ -422,8 +427,8 @@ async def test_simulator_duplicate_dispatch_is_idempotent(
 ) -> None:
     claim = await claim_one(store)
     assert await asyncio.gather(executor.submit(claim), executor.submit(claim)) == [
-        ExecutionStatus.SUCCEEDED,
-        ExecutionStatus.SUCCEEDED,
+        ExecutionObservation(ExecutionStatus.SUCCEEDED),
+        ExecutionObservation(ExecutionStatus.SUCCEEDED),
     ]
     async with engine.connect() as connection:
         assert (
@@ -515,7 +520,7 @@ async def test_transport_retry_before_acceptance_reuses_submission_id(
     original = executor.submit
     identities = []
 
-    async def submit(claim: Claim) -> ExecutionStatus:
+    async def submit(claim: Claim) -> ExecutionObservation:
         identities.append(claim.submission_id)
         if len(identities) == 1:
             raise TimeoutError("request never reached executor")

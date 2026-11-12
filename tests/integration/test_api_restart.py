@@ -77,6 +77,7 @@ def test_accepted_job_survives_api_process_crash(postgres_url: str) -> None:
     ):
         created = client.post(
             "/v1/jobs",
+            headers={"Idempotency-Key": "survive-process-crash"},
             json={
                 "model": "tiny-mlp",
                 "dataset": "synthetic-v1",
@@ -101,6 +102,19 @@ def test_accepted_job_survives_api_process_crash(postgres_url: str) -> None:
         assert recovered.json() == original.json()
         assert recovered.json()["status"] == "queued"
         assert recovered.json()["attempt"] == 0
+        replay = client.post(
+            "/v1/jobs",
+            headers={"Idempotency-Key": "survive-process-crash"},
+            json={
+                "model": "tiny-mlp",
+                "dataset": "synthetic-v1",
+                "epochs": 5,
+                "resources": {"cpus": 2.0, "gpus": 0, "memory_gib": 2.0},
+                "max_retries": 2,
+            },
+        )
+        assert replay.status_code == 202 and replay.headers["Location"] == location
+        assert client.get(location).json() == original.json()
 
 
 @contextmanager

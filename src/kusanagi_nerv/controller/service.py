@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from kusanagi_nerv.domain.execution import (
     Claim,
+    ExecutionObservation,
     ExecutionStatus,
     Executor,
     ExecutorUnavailable,
@@ -60,14 +61,14 @@ class Controller:
         self.claim: Claim | None = None
 
     async def _call(
-        self, operation: Callable[[], Awaitable[ExecutionStatus]]
-    ) -> ExecutionStatus:
+        self, operation: Callable[[], Awaitable[ExecutionObservation]]
+    ) -> ExecutionObservation:
         try:
             async with asyncio.timeout(self.settings.executor_timeout_seconds):
                 return await operation()
         except (TimeoutError, ExecutorUnavailable, RepositoryUnavailable, OSError):
             # A lost reply says nothing about whether the executor accepted work.
-            return ExecutionStatus.UNKNOWN
+            return ExecutionObservation(ExecutionStatus.UNKNOWN)
 
     async def tick(self) -> None:
         """Run one bounded observation; call serially, never concurrently."""
@@ -85,14 +86,32 @@ class Controller:
                 self.claim, lease_seconds=self.settings.lease_seconds
             )
             claim = self.claim
-            status = await self._call(lambda: self.executor.lookup(claim.submission_id))
-            if status == ExecutionStatus.NOT_FOUND and not claim.accepted:
+            if claim.job.requested_cancel_at is not None:
+                observation = await self._call(
+                    lambda: self.executor.cancel(claim.submission_id)
+                )
+            else:
+                observation = await self._call(
+                    lambda: self.executor.lookup(claim.submission_id)
+                )
+            if (
+                claim.job.requested_cancel_at is None
+                and observation.status == ExecutionStatus.NOT_FOUND
+                and not claim.accepted
+            ):
                 # Check authority again after lookup, before any dispatch.
-                self.claim = await self.store.renew(
+                claim = self.claim = await self.store.renew(
                     claim, lease_seconds=self.settings.lease_seconds
                 )
-                status = await self._call(lambda: self.executor.submit(claim))
-            self.claim = await self.store.observe(claim, status)
+                if claim.job.requested_cancel_at is not None:
+                    observation = await self._call(
+                        lambda: self.executor.cancel(claim.submission_id)
+                    )
+                else:
+                    observation = await self._call(lambda: self.executor.submit(claim))
+            self.claim = await self.store.observe(
+                claim, observation.status, failure_kind=observation.failure_kind
+            )
             logger.info(
                 "owner=%s job=%s attempt=%s submission=%s epoch=%s observation=%s",
                 claim.owner,
@@ -100,7 +119,7 @@ class Controller:
                 claim.attempt_id,
                 claim.submission_id,
                 claim.epoch,
-                status.value,
+                observation.status.value,
             )
         except LeaseLost:
             logger.info("owner=%s lease lost; dropping local claim", self.owner)

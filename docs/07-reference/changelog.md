@@ -1,5 +1,13 @@
 # Documentation change log
 
+## 2026-11-12 — v0.9 MLP-005 admission and recovery policies
+
+- Added tenant-scoped idempotency with canonical payload checks and `409` conflicts; keys survive API process death and uncertain admission responses.
+- Added bounded attempt retries, persisted exponential backoff/jitter and transient/permanent failure classification.
+- Added cancellation requests, guarded race handling and permanent simulator revocation records that block delayed submits; documented the stronger contract required of a future runtime adapter.
+- Recorded 244 passing tests, including 57 PostgreSQL cases. MLP-005 is In review; MLP-001–004 are integrated into main, with learning checkpoints still pending.
+- Added the policy runbook and updated API/schema/controller contracts. Execution remains SIMULATED; Ray and actual training follow later.
+
 ## 2026-11-11 — v0.8 MLP-004 durable controller
 
 - Added a separate controller, durable attempt/submission identities, PostgreSQL queue claims and owner/epoch/expiry guards; generic state updates cannot bypass an existing attempt.

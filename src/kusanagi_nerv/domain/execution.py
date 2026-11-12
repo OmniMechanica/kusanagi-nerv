@@ -16,6 +16,20 @@ class ExecutionStatus(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     REJECTED = "rejected"
+    CANCELLED = "cancelled"
+
+
+class FailureKind(StrEnum):
+    TRANSIENT = "transient"
+    PERMANENT = "permanent"
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionObservation:
+    status: ExecutionStatus
+    # Only meaningful for a confirmed FAILED/REJECTED observation. Transport
+    # failures are UNKNOWN and never enter the attempt retry policy.
+    failure_kind: FailureKind = FailureKind.PERMANENT
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,15 +54,24 @@ class Executor(Protocol):
     kind: str
     max_gpus: int
 
-    async def lookup(self, submission_id: str) -> ExecutionStatus:
+    async def lookup(self, submission_id: str) -> ExecutionObservation:
         """Observe an existing identity; NOT_FOUND alone is not terminal evidence."""
         ...
 
-    async def submit(self, claim: Claim) -> ExecutionStatus:
+    async def submit(self, claim: Claim) -> ExecutionObservation:
         """Idempotent by submission_id, including across caller crashes.
 
         REJECTED means confirmed non-execution; FAILED means confirmed termination.
         Both must be definitive for this identity, including concurrent dispatches.
         A timeout or lost response is UNKNOWN, never REJECTED.
+        """
+        ...
+
+    async def cancel(self, submission_id: str) -> ExecutionObservation:
+        """Request stop and observe the outcome for this identity.
+
+        CANCELLED requires confirmed termination AND durable prevention of any
+        delayed/concurrent submit for this identity. NOT_FOUND is not sufficient.
+        Return UNKNOWN if the runtime cannot establish those guarantees.
         """
         ...
