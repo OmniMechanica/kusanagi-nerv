@@ -41,7 +41,7 @@ jobs:
         run: uv run --locked ruff format --check src tests migrations
 
       - name: Run tests
-        run: uv run --locked pytest -q -m 'not integration'
+        run: uv run --locked pytest -q -m 'not integration and not ray'
 
       - name: Build the package
         run: uv build
@@ -78,3 +78,22 @@ jobs:
         run: uv sync --locked
       - name: Verify migrations, persistence and concurrent writes
         run: uv run --locked pytest -q tests/integration
+
+  ray:
+    name: Ray Core CPU
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+          enable-cache: true
+      - name: Install the pinned Python
+        run: uv python install
+      - name: Install locked dependencies and package with Ray
+        run: uv sync --locked --extra ray
+      - name: Verify real CPU tasks, actor state, limits and failures
+        run: uv run --locked --extra ray pytest -q tests/ray

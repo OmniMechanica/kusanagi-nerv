@@ -27,13 +27,13 @@ when using `uv run`.
 ```bash
 uv run --locked ruff check src tests migrations
 uv run --locked ruff format --check src tests migrations
-uv run --locked pytest -q -m 'not integration'
+uv run --locked pytest -q -m 'not integration and not ray'
 uv build
 ```
 
 The [CI workflow](.github/workflows/ci.yml) runs fast checks and a separate real
-PostgreSQL integration job on all pull requests and pushes to `main`. Build
-artifacts are written to the ignored `dist/` directory. See the
+PostgreSQL integration job plus a Ray Core CPU job on all pull requests and pushes
+to `main`. Build artifacts are written to the ignored `dist/` directory. See the
 [PostgreSQL guide](docs/06-engineering/postgres.md#run-the-checks) for database tests.
 
 ## Run the local job API
@@ -86,7 +86,25 @@ its lease to expire (30 seconds by default), then reconciles the same submission
 Read the [controller guide](docs/06-engineering/controller.md) for ownership,
 failure behavior, timing, limits and reproducible tests. MLP-005 adds
 [idempotency, bounded retries and cancellation](docs/06-engineering/job-policies.md).
-Ray and real training follow later.
+The isolated Ray Core example below exercises real CPU tasks. Controller integration
+with Ray Jobs and real training follow in later increments.
+
+## Run the isolated Ray Core example
+
+```bash
+uv sync --locked --extra ray
+uv run --locked --extra ray python -m kusanagi_nerv.examples.ray_core \
+  --tasks 8 --workers 2 --max-outstanding 4
+uv run --locked --extra ray pytest -q tests/ray
+```
+
+This starts an owned local CPU runtime, executes tasks in separate worker processes,
+and aggregates results in a stateful actor. The driver limits outstanding work
+with `ray.wait`; task CPU requests bound scheduler concurrency. The final JSON
+report includes observed concurrency, process IDs and actor state. Ray is optional
+for the API/controller; no PostgreSQL or existing Ray cluster is needed for this
+example. See the [Ray Core guide](docs/06-engineering/ray-core.md) for resource
+semantics, failure experiments, cleanup and the learning checkpoint.
 
 ## Implemented increments
 
@@ -106,9 +124,13 @@ Ray and real training follow later.
   fenced leases and a persistent simulated executor. PR #7 merged; learning drill pending.
 - [MLP-005](docs/03-planning/tasks/MLP-005.md): tenant-scoped idempotent admission,
   persisted retry backoff/budget and cancellation with dispatch revocation in the
-  simulated adapter. In review; learning drill pending.
+  simulated adapter. PR #8 merged; learning drill pending.
+- [MLP-006](docs/03-planning/tasks/MLP-006.md): isolated real CPU Ray tasks, a stateful
+  actor, explicit resource requests and bounded outstanding work. In review;
+  learning drill pending.
 
-The full suite has 244 tests: 187 fast cases and 57 PostgreSQL integration cases.
+The full suite has 276 tests: 214 fast cases, 57 PostgreSQL integration cases and
+5 real Ray CPU cases. Each integration suite requires its documented environment.
 See the [progress journal](docs/03-planning/progress.md)
 for local verification, hosted checks and scope. Static analysis with mypy/Pyright
 remains a P1 follow-up; runtime schema validation and Ruff are enforced now.

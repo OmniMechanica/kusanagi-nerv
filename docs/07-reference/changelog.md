@@ -1,5 +1,13 @@
 # Documentation change log
 
+## 2026-11-13 — v0.10 MLP-006 isolated Ray Core CPU example
+
+- Added optional pinned Ray 2.60.0, CPU remote tasks and a serial stateful actor in an isolated CLI example.
+- Added explicit CPU reservations, a bounded ObjectRef window, measured concurrency, process IDs and failure/deadline experiments with owned-runtime cleanup.
+- Added a separate real Ray CPU CI job and documented object references, logical resources and failure boundaries.
+- Recorded 276 passing tests: 214 fast, 57 PostgreSQL and 5 Ray CPU cases. PR #8 merged MLP-005; MLP-006 is In review and learning checkpoints remain pending.
+- The isolated example is TESTED-CPU; controller execution remains SIMULATED. Ray Jobs integration, training and GPU work remain later scope.
+
 ## 2026-11-12 — v0.9 MLP-005 admission and recovery policies
 
 - Added tenant-scoped idempotency with canonical payload checks and `409` conflicts; keys survive API process death and uncertain admission responses.
