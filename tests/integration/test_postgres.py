@@ -264,7 +264,7 @@ async def test_repeated_upgrade_preserves_data_and_schema_matches_models(
     async with engine.connect() as connection:
         assert (
             await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0003_retry_cancel"
+            == "0004_ray_dispatch"
         )
 
 

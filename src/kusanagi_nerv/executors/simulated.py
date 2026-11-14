@@ -14,6 +14,7 @@ from kusanagi_nerv.repositories.transactions import TransactionalRepository
 
 class SimulatedExecutor(TransactionalRepository):
     kind = "local-simulated-v1"
+    target = "local"
     max_gpus = 0
 
     def __init__(

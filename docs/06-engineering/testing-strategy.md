@@ -14,7 +14,7 @@
 | Full E2E | Submit → train → restore → serve → predict | MLP-013 |
 | Chaos | Controller/worker/object-store failure matrix | MLP-020 |
 
-MLP-003 adds an `integration` marker and a separate PostgreSQL CI service job. Fast checks explicitly select `-m 'not integration and not ray'`. Locally, DB cases require `KUSANAGI_TEST_DATABASE_URL`; missing configuration produces visible skips, not database evidence. Every DB case uses an owned disposable database. The process-crash test kills a real Uvicorn process after `202` and verifies the job through a new API process. See [reproduction commands](postgres.md#run-the-checks).
+MLP-003 adds an `integration` marker and a separate PostgreSQL CI service job. Fast checks explicitly select `-m 'not integration and not ray and not ray_jobs'`. Locally, DB cases require `KUSANAGI_TEST_DATABASE_URL`; missing configuration produces visible skips, not database evidence. Every DB case uses an owned disposable database. The process-crash test kills a real Uvicorn process after `202` and verifies the job through a new API process. See [reproduction commands](postgres.md#run-the-checks).
 
 MLP-006 adds a separate `ray` marker and CPU-only CI job with the optional Ray
 extra installed. Five real process cases exercise independent CPU/window limits,
@@ -22,6 +22,14 @@ actor state, task failure, deadline and cleanup. Each starts its own local runti
 in a fresh driver process and verifies removal of its temporary runtime directory.
 The fast suite does not import Ray. Concurrency tests assert scheduler/window upper
 bounds, not timing-dependent speedup. See the [Ray Core guide](ray-core.md).
+
+MLP-007 adds a `ray_jobs` marker and a dedicated CI job with PostgreSQL plus the
+`ray-jobs` extra. Five real runtime cases start API/controller processes and a
+separate Ray cluster; a test-only wrapper exits immediately after submit returns,
+before the ledger acknowledgement. Another test pauses the outbound submit with
+events, cancels through HTTP, then releases the delayed request and verifies
+terminal identity reuse is rejected. PostgreSQL-only checks exclude `ray_jobs`.
+The [Ray Jobs guide](ray-jobs.md) records the recovery and retention assumptions.
 
 ## Non-flaky testing principles
 

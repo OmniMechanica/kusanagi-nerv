@@ -10,6 +10,7 @@ dependencies = [
     "alembic>=1.20.1,<2",
     "asyncpg>=0.32,<1",
     "fastapi>=0.162.2,<1",
+    "httpx2>=2.16,<3",
     "pydantic>=2.14.3,<3",
     "sqlalchemy[asyncio]>=2.1.8,<3",
     "uvicorn>=0.54,<1",
@@ -17,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ray = ["ray==2.60.0"]
+ray-jobs = ["ray[default]==2.60.0"]
 
 [build-system]
 requires = ["uv_build==0.13.7"]
@@ -28,6 +30,7 @@ addopts = ["--import-mode=importlib", "--strict-markers", "--strict-config"]
 markers = [
     "integration: requires a real PostgreSQL server and creates isolated test databases",
     "ray: starts real local CPU Ray processes; requires the ray extra",
+    "ray_jobs: requires PostgreSQL and a real Ray Jobs cluster with the ray-jobs extra",
 ]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
@@ -41,7 +44,6 @@ select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
 
 [dependency-groups]
 dev = [
-    "httpx2>=2.16,<3",
     "pytest>=9.2.0",
     "pytest-asyncio>=1,<2",
     "ruff>=0.17.4",

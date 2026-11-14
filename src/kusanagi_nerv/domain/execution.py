@@ -25,11 +25,19 @@ class FailureKind(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutionResult:
+    worker_pid: int
+    completed_steps: int
+    checksum: str
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionObservation:
     status: ExecutionStatus
     # Only meaningful for a confirmed FAILED/REJECTED observation. Transport
     # failures are UNKNOWN and never enter the attempt retry policy.
     failure_kind: FailureKind = FailureKind.PERMANENT
+    result: ExecutionResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +48,7 @@ class Claim:
     owner: str
     epoch: int
     accepted: bool
+    executor_target: str = "local"
 
 
 class LeaseLost(RuntimeError):
@@ -53,6 +62,7 @@ class ExecutorUnavailable(RuntimeError):
 class Executor(Protocol):
     kind: str
     max_gpus: int
+    target: str
 
     async def lookup(self, submission_id: str) -> ExecutionObservation:
         """Observe an existing identity; NOT_FOUND alone is not terminal evidence."""

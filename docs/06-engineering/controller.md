@@ -2,8 +2,12 @@
 
 MLP-004 introduces a separate controller process. The API still only commits and
 reads logical jobs. Start PostgreSQL and apply `alembic upgrade head` using the
-[database guide](postgres.md); the current head is `0003_retry_cancel`. Neither
+[database guide](postgres.md); the current head is `0004_ray_dispatch`. Neither
 the API nor the controller creates tables at startup.
+
+MLP-007 adds `--executor ray` for a real dummy CPU workload on a separately running
+cluster. See the [Ray Jobs guide](ray-jobs.md) for setup and the stronger dispatch,
+identity and cancellation contracts. The simulation below remains an explicit option.
 
 ## Run the simulation
 
@@ -76,7 +80,8 @@ takeover from interleaving before commit.
 An epoch fences ledger writes, not external side effects. An old request may
 already be in flight when ownership changes. Safety therefore also depends on
 durable runtime identity/idempotency and reconciliation. This is not an
-exactly-once execution claim. Ray's adapter must establish these semantics in MLP-007.
+exactly-once execution claim. The [MLP-007 Ray adapter](ray-jobs.md) establishes its
+dispatch/revocation contract with separately tested runtime-identity assumptions.
 
 ## Outcome handling
 
@@ -135,7 +140,8 @@ MLP-005 implements [HTTP idempotency, bounded retries/backoff and cancellation](
 The adapter returns typed observations and transient/permanent failure classification;
 transport uncertainty never consumes another attempt. GPU requests
 remain queued with zero attempts; GPU capacity reasons/scheduling arrive later.
-CPU/memory allocations, tenant quotas, scheduling fairness and production auth are
+The simulation does not allocate CPU/memory; the Ray adapter requests logical
+entrypoint resources. Tenant quotas, scheduling fairness and production auth are
 not implemented. A permanently unknown attempt occupies its controller's single
-slot; this minimal polling model has no fairness/throughput claim. No Ray, training,
-checkpoint recovery, GPU performance or model deployment has been validated.
+slot; this minimal polling model has no fairness/throughput claim. Model training,
+checkpoint recovery, GPU performance and model deployment remain later work.

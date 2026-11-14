@@ -27,12 +27,12 @@ when using `uv run`.
 ```bash
 uv run --locked ruff check src tests migrations
 uv run --locked ruff format --check src tests migrations
-uv run --locked pytest -q -m 'not integration and not ray'
+uv run --locked pytest -q -m 'not integration and not ray and not ray_jobs'
 uv build
 ```
 
 The [CI workflow](.github/workflows/ci.yml) runs fast checks and a separate real
-PostgreSQL integration job plus a Ray Core CPU job on all pull requests and pushes
+PostgreSQL, Ray Core CPU and Ray Jobs integration jobs on all pull requests and pushes
 to `main`. Build artifacts are written to the ignored `dist/` directory. See the
 [PostgreSQL guide](docs/06-engineering/postgres.md#run-the-checks) for database tests.
 
@@ -86,8 +86,9 @@ its lease to expire (30 seconds by default), then reconciles the same submission
 Read the [controller guide](docs/06-engineering/controller.md) for ownership,
 failure behavior, timing, limits and reproducible tests. MLP-005 adds
 [idempotency, bounded retries and cancellation](docs/06-engineering/job-policies.md).
-The isolated Ray Core example below exercises real CPU tasks. Controller integration
-with Ray Jobs and real training follow in later increments.
+The isolated Ray Core example below exercises real CPU tasks. MLP-007 adds an
+optional [Ray Jobs controller](docs/06-engineering/ray-jobs.md) that runs a real
+dummy CPU workload. Model training follows in MLP-008.
 
 ## Run the isolated Ray Core example
 
@@ -105,6 +106,28 @@ report includes observed concurrency, process IDs and actor state. Ray is option
 for the API/controller; no PostgreSQL or existing Ray cluster is needed for this
 example. See the [Ray Core guide](docs/06-engineering/ray-core.md) for resource
 semantics, failure experiments, cleanup and the learning checkpoint.
+
+## Run the controller with Ray Jobs
+
+Use the [Ray Jobs guide](docs/06-engineering/ray-jobs.md) to start PostgreSQL/API,
+a separate local Ray cluster and the controller. The core commands in separate
+terminals are:
+
+```bash
+uv sync --locked --extra ray-jobs
+uv run --locked --extra ray-jobs python -m kusanagi_nerv.runtime.local \
+  --info-file /tmp/kusanagi-ray.json --cpus 2 --port 8265
+
+# With KUSANAGI_DATABASE_URL exported and migrations applied:
+uv run --locked --extra ray-jobs python -m kusanagi_nerv.controller \
+  --executor ray --ray-info-file /tmp/kusanagi-ray.json
+```
+
+The controller persists the target/session and submission identity, reconciles
+across process death, and waits for confirmed cancellation. The dummy workload's
+PID/checksum are stored in the attempt record. Ray Jobs is separate from the API
+and controller; this increment performs real CPU computation but no ML training.
+Keep `--extra ray-jobs` on commands sharing the running cluster's environment.
 
 ## Implemented increments
 
@@ -126,11 +149,15 @@ semantics, failure experiments, cleanup and the learning checkpoint.
   persisted retry backoff/budget and cancellation with dispatch revocation in the
   simulated adapter. PR #8 merged; learning drill pending.
 - [MLP-006](docs/03-planning/tasks/MLP-006.md): isolated real CPU Ray tasks, a stateful
-  actor, explicit resource requests and bounded outstanding work. In review;
+  actor, explicit resource requests and bounded outstanding work. PR #9 merged;
   learning drill pending.
 
-The full suite has 276 tests: 214 fast cases, 57 PostgreSQL integration cases and
-5 real Ray CPU cases. Each integration suite requires its documented environment.
+- [MLP-007](docs/03-planning/tasks/MLP-007.md): Ray Jobs adapter, pinned execution
+  target, durable dispatch admission/revocation, workload results and real
+  controller-crash/cancellation tests. In review; learning drill pending.
+
+The full suite has 318 tests: 243 fast cases, 65 PostgreSQL integration cases,
+5 Ray Core CPU cases and 5 Ray Jobs/PostgreSQL cases. Each integration suite requires its documented environment.
 See the [progress journal](docs/03-planning/progress.md)
 for local verification, hosted checks and scope. Static analysis with mypy/Pyright
 remains a P1 follow-up; runtime schema validation and Ruff are enforced now.

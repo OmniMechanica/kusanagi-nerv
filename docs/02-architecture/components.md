@@ -42,7 +42,7 @@ class TrainingExecutor(Protocol):
     async def cancel(self, submission_id: str) -> None: ...
 ```
 
-The controller persists `submission_id`, derived from immutable job ID and attempt number, before calling `submit()`. All operations address that same identity on the recorded Ray cluster. A lost submit response must not require a newly returned ID to find the execution. Reuse the identity for reconciliation; allocate a new one only for a new attempt after confirmed failure.
+The controller persists `submission_id` (`kusanagi-<attempt UUID>`, tied to one immutable job/attempt record), before calling `submit()`. All operations address that same identity on the recorded Ray cluster. A lost submit response must not require a newly returned ID to find the execution. Reuse the identity for reconciliation; allocate a new one only for a new attempt after confirmed failure.
 
 `ExecutionStatus` is an observation, separate from `JobStatus`: `NOT_FOUND`, `UNKNOWN`, `PENDING`, `RUNNING`, `SUCCEEDED`, `FAILED`, or `CANCELLED`. `UNKNOWN` means the lookup could not establish the outcome; `NOT_FOUND` means the reachable target currently has no matching job. Neither alone proves that an in-flight submit cannot still arrive. A successful `cancel()` call acknowledges a stop request, not confirmed termination.
 
@@ -50,4 +50,4 @@ Do not copy Ray Jobs driver status directly into training status. A running driv
 
 Ray Jobs supports a caller-supplied `submission_id`; duplicate submission raises an error rather than returning the previous result. The adapter must look up that identity and verify the existing execution instead of treating every submission error as a retryable training failure. See [Ray Jobs submit API](https://docs.ray.io/en/latest/cluster/running-applications/job-submission/doc/ray.job_submission.JobSubmissionClient.submit_job.html).
 
-The local adapter in MLP-004 follows this contract with controlled fake execution. A bare process-local Ray `ObjectRef` is not the persisted lookup contract. Keep cluster recreation/head failure outside the MVP recovery claim; see [reliability](reliability.md).
+MLP-007 implements this contract with a [Ray Jobs adapter](../06-engineering/ray-jobs.md): persisted target/session, dispatch admission/revocation, verified metadata and retained remote identities. The local adapter in MLP-004 follows it with controlled fake execution. A bare process-local Ray `ObjectRef` is not the persisted lookup contract. Keep cluster recreation/head failure outside the MVP recovery claim; see [reliability](reliability.md).
