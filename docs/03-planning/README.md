@@ -16,7 +16,7 @@
 
 One ticket per vertical slice. Prefer an end-to-end working increment to adding libraries that are not used. If a task exceeds its timebox, split implementation from design, record the deferred scope and preserve the critical path.
 
-Start with [repository bootstrap](../06-engineering/bootstrap.md) as the first step of `MLP-001`; it is not a separate ticket. MLP-001–005 are integrated into main through merged PRs; learning checkpoints remain pending. MLP-006 is In review with isolated real CPU Ray tasks, actor state and backpressure. MLP-007 onward remain Planned. See [progress](progress.md) for evidence and the remaining learning checks.
+Start with [repository bootstrap](../06-engineering/bootstrap.md) as the first step of `MLP-001`; it is not a separate ticket. MLP-001–006 are integrated into main through merged PRs; learning checkpoints remain pending. MLP-007 is In review with a real Ray Jobs controller adapter and restart/cancellation evidence. MLP-008 onward remain Planned. See [progress](progress.md) for evidence and the remaining learning checks.
 
 ## Critical path
 

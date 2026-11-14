@@ -67,7 +67,8 @@ def create_app(
         description=(
             "Learning API with a fixed test tenant. Jobs are committed to PostgreSQL "
             "before acceptance and survive API restarts. A separate controller can "
-            "simulate CPU jobs; no model training is performed yet. "
+            "run simulated jobs or real dummy CPU workloads through Ray Jobs; "
+            "no model training is performed yet. "
             "Idempotency-Key deduplicates admission within a tenant. Cancellation "
             "records intent before confirming worker termination."
         ),

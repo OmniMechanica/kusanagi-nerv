@@ -2,13 +2,14 @@
 
 **API version:** `/v1`. This is a target contract and will evolve through ADRs.
 
-## Implemented through MLP-005
+## Implemented through MLP-007
 
 Job creation, lookup and cancellation are implemented, plus FastAPI's `/docs` and `/openapi.json`. The app uses an injected PostgreSQL repository and the fixed `local-test-tenant` identity; memory is an explicit test adapter. This is a local learning configuration, not production authentication; no `X-Test-Tenant` header is enabled. Tests override the internal tenant dependency to verify isolation. `tenant_id` and all other extra request fields are rejected, including within `resources`.
 
 - POST commits a queued job in PostgreSQL before returning `202` with a UUID and relative `Location`; it does not perform training or schedule a background task. GET returns the submitted specification, requested resources, status, timestamps and the result/error fields below. Admission initializes `attempt: 0` and null result/error/waiting fields. With the separate MLP-004 controller running, GET can already show an attempt or a later state, even on the first read; the acceptance response still reports queued admission.
 - Optional `Idempotency-Key` deduplicates by tenant and canonical validated specification. Same payload returns the original `202` admission body/Location; a different payload returns `409 idempotency_conflict`. Keys are 1–255 visible ASCII characters, case-sensitive, with no whitespace or expiry. Duplicate headers are invalid. Unkeyed POSTs create separate jobs. Replayed admission does not change current job state; use GET for that state.
 - Jobs survive API restarts; processes using the same database share the ledger. Migrations run explicitly before startup. MLP-004 adds simulated CPU dispatch and fenced observations. It creates no real model/artifacts; GPU requests stay queued. MLP-005 adds persisted retry budgets/backoff and guarded cancellation; GET also exposes `requested_cancel_at` and `retry_not_before`.
+- MLP-007 adds an optional [Ray Jobs adapter](../06-engineering/ray-jobs.md) without changing the HTTP request/response schema. Its real dummy workload provides a start signal and persisted attempt result; model/artifact fields remain null. Cancellation can remain unresolved when an admitted submit has an unknown outcome. Generic Ray failures are permanent until explicit transient-error evidence exists.
 - Unknown and other-tenant UUIDs produce the same `404` envelope; a malformed UUID produces `422`.
 - Database failures produce a sanitized `503 storage_unavailable`. An unconfirmed write is never acknowledged as `202`, but a lost response/connection during commit can leave the actual outcome unknown. There is no automatic write retry; repeat the same tenant/key/payload to resolve an uncertain commit. Repeating an unkeyed POST can still duplicate the logical job. See [storage failure semantics](../06-engineering/postgres.md#failure-behavior-and-remaining-scope).
 

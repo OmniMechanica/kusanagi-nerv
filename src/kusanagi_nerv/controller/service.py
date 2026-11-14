@@ -79,6 +79,7 @@ class Controller:
                     executor_kind=self.executor.kind,
                     lease_seconds=self.settings.lease_seconds,
                     max_gpus=self.executor.max_gpus,
+                    executor_target=getattr(self.executor, "target", "local"),
                 )
             if self.claim is None:
                 return
@@ -110,7 +111,10 @@ class Controller:
                 else:
                     observation = await self._call(lambda: self.executor.submit(claim))
             self.claim = await self.store.observe(
-                claim, observation.status, failure_kind=observation.failure_kind
+                claim,
+                observation.status,
+                failure_kind=observation.failure_kind,
+                result=observation.result,
             )
             logger.info(
                 "owner=%s job=%s attempt=%s submission=%s epoch=%s observation=%s",

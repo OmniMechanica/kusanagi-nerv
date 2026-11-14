@@ -27,6 +27,18 @@ Admission uses the existing tenant/key uniqueness constraint. A current lease
 owner can consume a newer cancellation version under the job lock while retaining
 all attempt/owner/epoch/expiry checks. See [policy semantics](../06-engineering/job-policies.md).
 
+## Implemented in MLP-007
+
+Migration `0004_ray_dispatch` adds `job_attempts.executor_target` (HTTP origin plus
+Ray session identity; existing simulated attempts default to `local`),
+`dispatch_started_at`, `dispatch_revoked_at` and JSONB `execution_result`.
+Dispatch admission commits before outbound submission, and revocation uses the
+same job-first lock order. A never-admitted dispatch can be cancelled locally;
+an admitted dispatch requires remote terminal evidence. Recovery claims filter
+on the recorded target. Result PID/step-count/checksum commit with the fenced
+success observation. No token or model artifact is stored in these new fields.
+Downgrade refuses to discard Ray attempt history. See [Ray Jobs](../06-engineering/ray-jobs.md).
+
 ## Proposed tables
 
 The remaining target schema includes:

@@ -1,5 +1,13 @@
 # Documentation change log
 
+## 2026-11-14 — v0.11 MLP-007 Ray Jobs controller integration
+
+- Added the async Ray Jobs adapter and an independently owned local cluster launcher; pinned target/session and stable submission identity are preserved through controller restart.
+- Added migration 0004 with dispatch admission/revocation and persisted dummy workload results. Cancellation distinguishes never-admitted work from possibly delayed HTTP submissions.
+- Added actual API/controller/Ray/PostgreSQL tests for process death, crash before acknowledgement, duplicate submission, cancellation and driver failure, plus a dedicated CI job.
+- Recorded 318 passing local tests. MLP-007 is In review; PR #9 merged MLP-006 into main during implementation, and learner checkpoints remain pending.
+- Documented retained-Ray-identity assumptions, permanent failure classification, start/result signals and recovery limits. Evidence is TESTED-CPU for deterministic dummy work; model training remains MLP-008 onward.
+
 ## 2026-11-13 — v0.10 MLP-006 isolated Ray Core CPU example
 
 - Added optional pinned Ray 2.60.0, CPU remote tasks and a serial stateful actor in an isolated CLI example.

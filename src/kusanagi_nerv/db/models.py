@@ -116,6 +116,14 @@ class AttemptRow(Base):
     attempt_no: Mapped[int]
     submission_id: Mapped[str] = mapped_column(String(128))
     executor_kind: Mapped[str] = mapped_column(String(64))
+    executor_target: Mapped[str] = mapped_column(String(512), server_default="local")
+    dispatch_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    dispatch_revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    execution_result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     lease_owner: Mapped[str] = mapped_column(String(128))
     lease_epoch: Mapped[int]
     lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

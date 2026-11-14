@@ -2,8 +2,9 @@
 
 MLP-005 builds on the [durable controller](controller.md). Apply
 `uv run --locked alembic upgrade head` before starting the API/controller; the
-current head is `0003_retry_cancel`. The runtime remains **SIMULATED**. These
-guarantees are tested against PostgreSQL and the local adapter, not Ray or training.
+current head is `0004_ray_dispatch`. This guide's MLP-005 runtime evidence is
+**SIMULATED**. MLP-007 independently tests the [Ray Jobs adapter](ray-jobs.md),
+including its stricter missing-job cancellation limits and failure classification.
 
 ## Request identity
 
@@ -102,7 +103,9 @@ completion are serialized. These records have no cleanup/expiry yet.
 
 `NOT_FOUND`, a stop request acknowledgement or a timeout alone is insufficient.
 An adapter unable to prove revocation must return `UNKNOWN`; the job remains
-`CANCELLING`. A future Ray adapter must demonstrate this contract independently.
+`CANCELLING`. The [MLP-007 Ray adapter](ray-jobs.md) proves this with DB admission/
+revocation plus retained terminal Ray identities; an admitted but missing job
+cannot be treated as cancelled.
 Lease expiry alone does not revoke remote requests.
 
 Observed success can win the race (`CANCELLING → SUCCEEDED`). Confirmed failure
@@ -128,8 +131,8 @@ lookup waits for an uncommitted cancellation transaction.
 
 Retry tests make deadlines due explicitly in their isolated database rather than
 sleeping through backoff. Simulator outcomes and fault injection are `SIMULATED`;
-database coordination and process recovery are `TESTED-CPU`. There is no
-exactly-once execution, production tenant auth, real resource allocation, Ray,
-checkpoint recovery or GPU evidence. Downgrading a database containing new
+database coordination and process recovery are `TESTED-CPU`. This simulator suite
+does not establish exactly-once execution, production tenant auth, real resource
+allocation, Ray, checkpoint recovery or GPU evidence. Downgrading a database containing new
 cancellation outcomes/tombstones to MLP-004 is rejected by constraints rather
 than silently deleting or rewriting history; normal operation uses forward migrations.
