@@ -8,12 +8,20 @@
 | API contract | Create/get validation and 202/404/422 in MLP-002; idempotency/409 and cancellation in MLP-005 | MLP-002 |
 | DB integration | Real PostgreSQL, transaction races, migrations | MLP-003 |
 | Controller integration | Multi-controller claim, restart and reconciliation | MLP-004 |
-| Ray integration | Runtime adapter executes outside API | MLP-006 |
+| Ray Core exercise | Isolated real CPU tasks, actor state and backpressure | MLP-006 |
+| Ray adapter integration | Durable controller dispatches and reconciles real Ray Jobs | MLP-007 |
 | Training recovery | Fault injected mid-train; checkpoint resumes | MLP-010 |
 | Full E2E | Submit → train → restore → serve → predict | MLP-013 |
 | Chaos | Controller/worker/object-store failure matrix | MLP-020 |
 
-MLP-003 adds an `integration` marker and a separate PostgreSQL CI service job. Fast checks explicitly select `-m 'not integration'`. Locally, DB cases require `KUSANAGI_TEST_DATABASE_URL`; missing configuration produces visible skips, not database evidence. Every DB case uses an owned disposable database. The process-crash test kills a real Uvicorn process after `202` and verifies the job through a new API process. See [reproduction commands](postgres.md#run-the-checks).
+MLP-003 adds an `integration` marker and a separate PostgreSQL CI service job. Fast checks explicitly select `-m 'not integration and not ray'`. Locally, DB cases require `KUSANAGI_TEST_DATABASE_URL`; missing configuration produces visible skips, not database evidence. Every DB case uses an owned disposable database. The process-crash test kills a real Uvicorn process after `202` and verifies the job through a new API process. See [reproduction commands](postgres.md#run-the-checks).
+
+MLP-006 adds a separate `ray` marker and CPU-only CI job with the optional Ray
+extra installed. Five real process cases exercise independent CPU/window limits,
+actor state, task failure, deadline and cleanup. Each starts its own local runtime
+in a fresh driver process and verifies removal of its temporary runtime directory.
+The fast suite does not import Ray. Concurrency tests assert scheduler/window upper
+bounds, not timing-dependent speedup. See the [Ray Core guide](ray-core.md).
 
 ## Non-flaky testing principles
 

@@ -5,6 +5,7 @@
 - [PostgreSQL setup, migrations and integration checks](postgres.md)
 - [Controller ownership, simulation and crash recovery](controller.md)
 - [Idempotent requests, retry budgets and cancellation races](job-policies.md)
+- [Isolated Ray Core tasks, actor state and backpressure](ray-core.md)
 - [Testing strategy and non-flaky integration tests](testing-strategy.md)
 - [Definition of Done](definition-of-done.md)
 - [Risk register and mitigations](risk-register.md)

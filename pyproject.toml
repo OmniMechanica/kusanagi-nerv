@@ -15,6 +15,9 @@ dependencies = [
     "uvicorn>=0.54,<1",
 ]
 
+[project.optional-dependencies]
+ray = ["ray==2.60.0"]
+
 [build-system]
 requires = ["uv_build==0.13.7"]
 build-backend = "uv_build"
@@ -22,7 +25,10 @@ build-backend = "uv_build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["--import-mode=importlib", "--strict-markers", "--strict-config"]
-markers = ["integration: requires a real PostgreSQL server and creates isolated test databases"]
+markers = [
+    "integration: requires a real PostgreSQL server and creates isolated test databases",
+    "ray: starts real local CPU Ray processes; requires the ray extra",
+]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
