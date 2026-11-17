@@ -1,5 +1,12 @@
 # Documentation change log
 
+## 2026-11-17 — v0.12 MLP-008 reproducible CPU training
+
+- Added the optional CPU PyTorch trainer, versioned synthetic data split, seeded minibatches and held-out MSE/MAE.
+- Added a loadable weights artifact with configuration, environment and metric history. The JSON report gives the exact output path and SHA-256.
+- Added dedicated CPU training CI and tests for repeat runs, model loading, write interruption and output collisions.
+- MLP-008 is In review with TESTED-CPU evidence. PR #10 merged MLP-007 into main. Learning checkpoints remain pending.
+
 ## 2026-11-14 — v0.11 MLP-007 Ray Jobs controller integration
 
 - Added the async Ray Jobs adapter and an independently owned local cluster launcher; pinned target/session and stable submission identity are preserved through controller restart.

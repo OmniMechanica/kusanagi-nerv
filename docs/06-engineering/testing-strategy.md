@@ -10,11 +10,12 @@
 | Controller integration | Multi-controller claim, restart and reconciliation | MLP-004 |
 | Ray Core exercise | Isolated real CPU tasks, actor state and backpressure | MLP-006 |
 | Ray adapter integration | Durable controller dispatches and reconciles real Ray Jobs | MLP-007 |
+| CPU training | Real fit, held-out metrics, reproducibility and artifact reload | MLP-008 |
 | Training recovery | Fault injected mid-train; checkpoint resumes | MLP-010 |
 | Full E2E | Submit → train → restore → serve → predict | MLP-013 |
 | Chaos | Controller/worker/object-store failure matrix | MLP-020 |
 
-MLP-003 adds an `integration` marker and a separate PostgreSQL CI service job. Fast checks explicitly select `-m 'not integration and not ray and not ray_jobs'`. Locally, DB cases require `KUSANAGI_TEST_DATABASE_URL`; missing configuration produces visible skips, not database evidence. Every DB case uses an owned disposable database. The process-crash test kills a real Uvicorn process after `202` and verifies the job through a new API process. See [reproduction commands](postgres.md#run-the-checks).
+MLP-003 adds an `integration` marker and a separate PostgreSQL CI service job. Fast checks exclude `integration`, `ray`, `ray_jobs` and `training`. Locally, DB cases require `KUSANAGI_TEST_DATABASE_URL`; missing configuration produces visible skips, not database evidence. Every DB case uses an owned disposable database. The process-crash test kills a real Uvicorn process after `202` and verifies the job through a new API process. See [reproduction commands](postgres.md#run-the-checks).
 
 MLP-006 adds a separate `ray` marker and CPU-only CI job with the optional Ray
 extra installed. Five real process cases exercise independent CPU/window limits,
@@ -30,6 +31,12 @@ before the ledger acknowledgement. Another test pauses the outbound submit with
 events, cancels through HTTP, then releases the delayed request and verifies
 terminal identity reuse is rejected. PostgreSQL-only checks exclude `ray_jobs`.
 The [Ray Jobs guide](ray-jobs.md) records the recovery and retention assumptions.
+
+MLP-008 adds the `training` marker and a CPU PyTorch CI job. The smoke test runs
+training through the installed CLI with the same seed twice and a different seed
+once. It reloads the artifact for a forward pass and checks the held-out metric
+and file hash. The other training cases check partial writes and output collisions.
+See [CPU training](cpu-training.md).
 
 ## Non-flaky testing principles
 
