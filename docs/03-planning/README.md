@@ -16,7 +16,7 @@
 
 One ticket per vertical slice. Prefer an end-to-end working increment to adding libraries that are not used. If a task exceeds its timebox, split implementation from design, record the deferred scope and preserve the critical path.
 
-Start with [repository bootstrap](../06-engineering/bootstrap.md) as the first step of `MLP-001`; it is not a separate ticket. MLP-001–007 are integrated into main through merged PRs, with learning checkpoints pending. MLP-008 is In review with reproducible standalone PyTorch training and loadable model artifacts. MLP-009 onward remain Planned. See [progress](progress.md) for evidence and the remaining learning checks.
+Start with [repository bootstrap](../06-engineering/bootstrap.md) as the first step of `MLP-001`; it is not a separate ticket. MLP-001–008 are integrated into main through merged PRs, with learning checkpoints pending. MLP-009 is In review with real multi-worker CPU training and an attempt-scoped result. MLP-010 onward remain Planned. See [progress](progress.md) for evidence and the remaining learning checks.
 
 ## Critical path
 

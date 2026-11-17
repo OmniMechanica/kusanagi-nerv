@@ -5,8 +5,10 @@ import math
 import os
 import platform
 import tempfile
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
+from typing import BinaryIO
 
 import torch
 from torch import Tensor, nn
@@ -129,7 +131,21 @@ def train(config: TrainingConfig, output: Path) -> TrainingResult:
             }
         )
 
-    artifact = {
+    artifact = model_artifact(model, config, initial_mse, initial_mae, history)
+    sha256 = publish_artifact(output, lambda stream: torch.save(artifact, stream))
+    return TrainingResult(
+        output, sha256, config.epochs, train_mse, initial_mse, eval_mse, eval_mae
+    )
+
+
+def model_artifact(
+    model: nn.Module,
+    config: TrainingConfig,
+    initial_mse: float,
+    initial_mae: float,
+    history: list[dict[str, int | float]],
+) -> dict:
+    return {
         "format_version": ARTIFACT_VERSION,
         "model": MODEL,
         "dataset": {
@@ -157,20 +173,21 @@ def train(config: TrainingConfig, output: Path) -> TrainingResult:
         },
         "model_state_dict": model.state_dict(),
     }
+
+
+def publish_artifact(output: Path, write: Callable[[BinaryIO], object]) -> str:
     # Stage in the destination directory. Linking the complete file publishes
     # atomically and fails if another run already claimed the output path.
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         dir=output.parent, prefix=".kn-weights-"
     ) as staged:
-        torch.save(artifact, staged)
+        write(staged)
         staged.flush()
         staged.seek(0)
         sha256 = hashlib.file_digest(staged, "sha256").hexdigest()
         os.link(staged.name, output)
-    return TrainingResult(
-        output, sha256, config.epochs, train_mse, initial_mse, eval_mse, eval_mae
-    )
+    return sha256
 
 
 def load_model(path: Path) -> nn.Module:

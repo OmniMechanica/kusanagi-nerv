@@ -27,12 +27,13 @@ when using `uv run`.
 ```bash
 uv run --locked ruff check src tests migrations
 uv run --locked ruff format --check src tests migrations
-uv run --locked pytest -q -m 'not integration and not ray and not ray_jobs and not training'
+uv run --locked pytest -q -m 'not integration and not ray and not ray_jobs and not training and not ray_train'
 uv build
 ```
 
-The [CI workflow](.github/workflows/ci.yml) runs fast checks, PostgreSQL integration, Ray Core, Ray Jobs integration and CPU
-PyTorch training on pull requests and pushes to `main`. Build artifacts are written to the ignored `dist/` directory. See the
+The [CI workflow](.github/workflows/ci.yml) runs fast checks, PostgreSQL integration,
+Ray Core, Ray Jobs integration, standalone PyTorch training and Ray Train DDP on
+pull requests and pushes to `main`. Build artifacts go to the ignored `dist/` directory. See the
 [PostgreSQL guide](docs/06-engineering/postgres.md#run-the-checks) for database tests.
 
 ## Run the local job API
@@ -142,6 +143,20 @@ The command trains a regressor on generated tabular data and reports held-out
 metrics, the artifact path and SHA-256 as JSON. See the [CPU training guide](docs/06-engineering/cpu-training.md)
 for model loading, seed behavior and the artifact contract.
 
+## Train with Ray Train on two CPU workers
+
+```bash
+uv sync --locked --extra ray-train
+training_dir=$(mktemp -d)
+uv run --locked --extra ray-train python -m kusanagi_nerv.training.ray_train \
+  --submission-id ddp-demo-1 --device cpu --num-workers 2 \
+  --output "$training_dir/model.pt"
+```
+
+Each worker trains on a disjoint shard and synchronizes gradients with PyTorch
+DDP. The start event and result carry the submission ID. The result includes
+rank PIDs, metrics and the loadable weights path. See the [Ray Train guide](docs/06-engineering/ray-train.md).
+
 ## Implemented increments
 
 - [MLP-001](docs/03-planning/tasks/MLP-001.md): eight-state pure Python
@@ -168,11 +183,13 @@ for model loading, seed behavior and the artifact contract.
   target, durable dispatch admission/revocation, workload results and real
   controller-crash/cancellation tests. PR #10 merged; learning drill pending.
 - [MLP-008](docs/03-planning/tasks/MLP-008.md): reproducible standalone CPU PyTorch
-  training, held-out metrics and loadable model weights with metadata. In review;
+  training, held-out metrics and loadable model weights with metadata. PR #11 merged;
   learning drill pending.
+- [MLP-009](docs/03-planning/tasks/MLP-009.md): multi-worker CPU DDP, ranked worker
+  evidence and an attempt-scoped start/result contract. In review.
 
-The full suite has 331 tests across five suites: 252 fast, 65 PostgreSQL, 5 Ray
-Core, 5 Ray Jobs/PostgreSQL and 4 PyTorch CPU training cases. Each integration
+The full suite has 333 tests across six suites: 252 fast, 65 PostgreSQL, 5 Ray
+Core, 5 Ray Jobs/PostgreSQL, 4 PyTorch CPU and 2 Ray Train cases. Each integration
 suite requires its documented environment.
 See the [progress journal](docs/03-planning/progress.md)
 for local verification, hosted checks and scope. Static analysis with mypy/Pyright
