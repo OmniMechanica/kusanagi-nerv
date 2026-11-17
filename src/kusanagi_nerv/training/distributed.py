@@ -5,6 +5,7 @@ import json
 import math
 import os
 import shutil
+import signal
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
@@ -31,6 +32,7 @@ from .loop import (
     synthetic_split,
     train_epoch,
 )
+from .recovery_config import CHECKPOINT_PREFIX, RecoveryConfig
 
 WEIGHTS = "model.pt"
 
@@ -43,6 +45,7 @@ def _parameter_sha256(model: torch.nn.Module) -> str:
 
 
 def _worker_loop(values: dict) -> None:
+    recovery_payload = values.pop("recovery", None)
     config = DistributedConfig(
         **{**values, "training": TrainingConfig(**values["training"])}
     )
@@ -75,11 +78,26 @@ def _worker_loop(values: dict) -> None:
         eval_x, eval_y = eval_x.to(device), eval_y.to(device)
         initial_mse, initial_mae = evaluate(model.module, eval_x, eval_y)
 
-    for epoch in range(1, spec.epochs + 1):
+    first_epoch, restored_step = 1, 0
+    recovery = None
+    if recovery_payload is not None:
+        from .checkpoint import publish_checkpoint, restore_checkpoint
+        from .object_store import ObjectStore, ObjectStoreSettings
+
+        recovery = RecoveryConfig.from_payload(recovery_payload)
+        store = ObjectStore(ObjectStoreSettings.from_environment())
+        if store.settings.identity != recovery.storage_identity:
+            raise ValueError("Recovery object store identity changed")
+        last_epoch, restored_step, history = restore_checkpoint(
+            store, recovery, config, model.module, optimizer, rng
+        )
+        first_epoch = last_epoch + 1
+
+    for epoch in range(first_epoch, spec.epochs + 1):
         permutation = torch.randperm(len(train_x), generator=rng, device="cpu")
         indices = permutation[rank::world_size]
         features, targets = train_x[indices].to(device), train_y[indices].to(device)
-        if epoch == 1:
+        if epoch == first_epoch:
             # Wait until all ranks have the model and the first shard. The
             # event is attributable to this submission, even in Ray Jobs logs.
             dist.barrier()
@@ -93,6 +111,8 @@ def _worker_loop(values: dict) -> None:
                             "device": device.type,
                             "rank": rank,
                             "worker_pid": os.getpid(),
+                            "first_epoch": first_epoch,
+                            "restored_optimizer_step": restored_step,
                         }
                     ),
                     flush=True,
@@ -117,6 +137,28 @@ def _worker_loop(values: dict) -> None:
                     "eval_mae": eval_mae,
                 }
             )
+        if recovery is not None:
+            if rank == 0:
+                checkpoint = publish_checkpoint(
+                    store,
+                    recovery,
+                    config,
+                    epoch,
+                    model.module,
+                    optimizer,
+                    rng,
+                    history,
+                )
+                print(
+                    CHECKPOINT_PREFIX
+                    + json.dumps(
+                        {"submission_id": config.submission_id, **asdict(checkpoint)}
+                    ),
+                    flush=True,
+                )
+                if recovery.kill_after_epoch == epoch:
+                    os.kill(os.getpid(), signal.SIGKILL)
+            dist.barrier()
 
     worker = WorkerEvidence(
         rank,
@@ -149,13 +191,17 @@ def _worker_loop(values: dict) -> None:
         "world_size": world_size,
         "submission_id": config.submission_id,
         "workers": workers,
+        "first_epoch": first_epoch,
+        "restored_optimizer_step": restored_step,
     }
     with tempfile.TemporaryDirectory(prefix="kn-train-model-") as directory:
         torch.save(artifact, Path(directory) / WEIGHTS)
         train.report(metrics, checkpoint=train.Checkpoint.from_directory(directory))
 
 
-def train_distributed(config: DistributedConfig, output: Path) -> DistributedResult:
+def train_distributed(
+    config: DistributedConfig, output: Path, *, recovery: RecoveryConfig | None = None
+) -> DistributedResult:
     """Run on an initialized Ray cluster with a local shared filesystem."""
     if not ray.is_initialized():
         raise RuntimeError("Initialize the Ray runtime before starting Ray Train")
@@ -168,7 +214,10 @@ def train_distributed(config: DistributedConfig, output: Path) -> DistributedRes
     with tempfile.TemporaryDirectory(prefix="kn-ray-train-storage-") as storage:
         result = TorchTrainer(
             _worker_loop,
-            train_loop_config=asdict(config),
+            train_loop_config={
+                **asdict(config),
+                "recovery": asdict(recovery) if recovery else None,
+            },
             scaling_config=train.ScalingConfig(
                 num_workers=config.num_workers,
                 use_gpu=use_gpu,

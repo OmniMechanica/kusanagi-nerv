@@ -32,12 +32,27 @@ class ExecutionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CheckpointRef:
+    uri: str
+    sha256: str
+    epoch: int
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingExecutionResult(ExecutionResult):
+    artifact_uri: str
+    first_epoch: int
+    restored_optimizer_step: int
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionObservation:
     status: ExecutionStatus
     # Only meaningful for a confirmed FAILED/REJECTED observation. Transport
     # failures are UNKNOWN and never enter the attempt retry policy.
     failure_kind: FailureKind = FailureKind.PERMANENT
     result: ExecutionResult | None = None
+    checkpoint: CheckpointRef | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +64,7 @@ class Claim:
     epoch: int
     accepted: bool
     executor_target: str = "local"
+    resume_checkpoint: CheckpointRef | None = None
 
 
 class LeaseLost(RuntimeError):

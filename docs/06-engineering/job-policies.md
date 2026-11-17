@@ -2,7 +2,7 @@
 
 MLP-005 builds on the [durable controller](controller.md). Apply
 `uv run --locked alembic upgrade head` before starting the API/controller; the
-current head is `0004_ray_dispatch`. This guide's MLP-005 runtime evidence is
+current head is `0005_training_checkpoints`. This guide's MLP-005 runtime evidence is
 **SIMULATED**. MLP-007 independently tests the [Ray Jobs adapter](ray-jobs.md),
 including its stricter missing-job cancellation limits and failure classification.
 

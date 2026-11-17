@@ -39,6 +39,17 @@ on the recorded target. Result PID/step-count/checksum commit with the fenced
 success observation. No token or model artifact is stored in these new fields.
 Downgrade refuses to discard Ray attempt history. See [Ray Jobs](../06-engineering/ray-jobs.md).
 
+## Implemented in MLP-010
+
+Migration `0005_training_checkpoints` adds JSONB `published_checkpoint` and
+`resume_checkpoint` references to `job_attempts`. Each reference contains an S3
+URI, SHA-256 and epoch. A fenced observation can advance the published checkpoint
+and the public `jobs.checkpoint_uri`. On a confirmed retry, the claim transaction
+copies the previous attempt's published reference before dispatch. Training
+retry claims keep the same executor and target. The success transaction also sets
+`jobs.artifact_uri` and records the restored epoch/Adam step in the attempt result.
+See [checkpoint recovery](../06-engineering/checkpoint-recovery.md).
+
 ## Proposed tables
 
 The remaining target schema includes:

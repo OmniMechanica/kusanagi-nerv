@@ -12,11 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from kusanagi_nerv.db.models import AttemptRow, JobRow
 from kusanagi_nerv.domain.execution import (
+    CheckpointRef,
     Claim,
     ExecutionResult,
     ExecutionStatus,
     FailureKind,
     LeaseLost,
+    TrainingExecutionResult,
 )
 from kusanagi_nerv.domain.job_lifecycle import JobStatus, transition
 from kusanagi_nerv.domain.retries import RetryPolicy
@@ -39,6 +41,9 @@ def to_claim(job: JobRow, attempt: AttemptRow) -> Claim:
         epoch=attempt.lease_epoch,
         accepted=attempt.accepted_at is not None,
         executor_target=attempt.executor_target,
+        resume_checkpoint=CheckpointRef(**attempt.resume_checkpoint)
+        if attempt.resume_checkpoint
+        else None,
     )
 
 
@@ -152,6 +157,20 @@ class AttemptRepository(TransactionalRepository):
                                         ]
                                     ),
                                     AttemptRow.failure_kind == FailureKind.TRANSIENT,
+                                    # A training checkpoint is tied to the
+                                    # training executor and its recorded target.
+                                    or_(
+                                        and_(
+                                            AttemptRow.executor_kind
+                                            != "ray-training-v1",
+                                            executor_kind != "ray-training-v1",
+                                        ),
+                                        and_(
+                                            AttemptRow.executor_kind == executor_kind,
+                                            AttemptRow.executor_target
+                                            == executor_target,
+                                        ),
+                                    ),
                                 )
                                 .exists(),
                             ),
@@ -172,6 +191,14 @@ class AttemptRepository(TransactionalRepository):
                     return None
                 now = await session.scalar(select(func.clock_timestamp()))
                 attempt_id = uuid4()
+                resume_checkpoint = None
+                if job.status == JobStatus.RETRYING:
+                    resume_checkpoint = await session.scalar(
+                        select(AttemptRow.published_checkpoint).where(
+                            AttemptRow.job_id == job.job_id,
+                            AttemptRow.attempt_no == job.attempt,
+                        )
+                    )
                 attempt = AttemptRow(
                     attempt_id=attempt_id,
                     job_id=job.job_id,
@@ -179,6 +206,7 @@ class AttemptRepository(TransactionalRepository):
                     submission_id=f"kusanagi-{attempt_id}",
                     executor_kind=executor_kind,
                     executor_target=executor_target,
+                    resume_checkpoint=resume_checkpoint,
                     lease_owner=owner,
                     lease_epoch=1,
                     lease_expires_at=now + duration,
@@ -253,12 +281,12 @@ class AttemptRepository(TransactionalRepository):
             job, attempt = await self._owned(session, claim, duration=duration)
             return to_claim(job, attempt)
 
-    async def begin_dispatch(self, claim: Claim) -> bool:
+    async def begin_dispatch(self, claim: Claim, kind: str = "ray-jobs-v1") -> bool:
         """Commit the possibility of an in-flight request before external I/O."""
         async with self._transaction() as session:
             job, attempt = await self._owned(session, claim)
             if (
-                attempt.executor_kind != "ray-jobs-v1"
+                attempt.executor_kind != kind
                 or attempt.executor_target != claim.executor_target
             ):
                 raise LeaseLost("Executor target does not match the stored attempt")
@@ -278,7 +306,7 @@ class AttemptRepository(TransactionalRepository):
         return True
 
     async def read_dispatch(
-        self, submission_id: str, target: str
+        self, submission_id: str, target: str, kind: str = "ray-jobs-v1"
     ) -> DispatchRecord | None:
         async with self._transaction() as session:
             row = (
@@ -287,7 +315,7 @@ class AttemptRepository(TransactionalRepository):
                     .join(AttemptRow, AttemptRow.job_id == JobRow.job_id)
                     .where(
                         AttemptRow.submission_id == submission_id,
-                        AttemptRow.executor_kind == "ray-jobs-v1",
+                        AttemptRow.executor_kind == kind,
                         AttemptRow.executor_target == target,
                     )
                 )
@@ -295,7 +323,7 @@ class AttemptRepository(TransactionalRepository):
             return None if row is None else dispatch_record(*row)
 
     async def revoke_dispatch(
-        self, submission_id: str, target: str
+        self, submission_id: str, target: str, kind: str = "ray-jobs-v1"
     ) -> DispatchRecord | None:
         """Serialize revocation with begin_dispatch, always locking job first."""
         async with self._transaction() as session:
@@ -305,7 +333,7 @@ class AttemptRepository(TransactionalRepository):
                     .join(AttemptRow, AttemptRow.job_id == JobRow.job_id)
                     .where(
                         AttemptRow.submission_id == submission_id,
-                        AttemptRow.executor_kind == "ray-jobs-v1",
+                        AttemptRow.executor_kind == kind,
                         AttemptRow.executor_target == target,
                     )
                     .with_for_update(of=JobRow)
@@ -331,6 +359,7 @@ class AttemptRepository(TransactionalRepository):
         *,
         failure_kind: FailureKind = FailureKind.PERMANENT,
         result: ExecutionResult | None = None,
+        checkpoint: CheckpointRef | None = None,
     ) -> Claim | None:
         if not isinstance(status, ExecutionStatus):
             raise TypeError("Expected ExecutionStatus")
@@ -344,7 +373,14 @@ class AttemptRepository(TransactionalRepository):
             ):
                 status = ExecutionStatus.UNKNOWN
             attempt.last_observation = status
-            previous = (job.status, job.waiting_reason, job.error)
+            previous = (job.status, job.waiting_reason, job.error, job.checkpoint_uri)
+            current_checkpoint = attempt.published_checkpoint
+            if checkpoint is not None and (
+                current_checkpoint is None
+                or checkpoint.epoch > current_checkpoint["epoch"]
+            ):
+                attempt.published_checkpoint = asdict(checkpoint)
+                job.checkpoint_uri = checkpoint.uri
             job.waiting_reason = None
             if status == ExecutionStatus.UNKNOWN:
                 job.waiting_reason = "executor_outcome_unknown"
@@ -401,7 +437,14 @@ class AttemptRepository(TransactionalRepository):
                 attempt.finished_at = now
                 if status == ExecutionStatus.SUCCEEDED and result is not None:
                     attempt.execution_result = asdict(result)
-            if previous != (job.status, job.waiting_reason, job.error):
+                    if isinstance(result, TrainingExecutionResult):
+                        job.artifact_uri = result.artifact_uri
+            if previous != (
+                job.status,
+                job.waiting_reason,
+                job.error,
+                job.checkpoint_uri,
+            ):
                 job.state_version += 1
                 job.updated_at = now
             await session.flush()

@@ -1,5 +1,12 @@
 # Documentation change log
 
+## 2026-11-17 — v0.14 MLP-010 S3 checkpoint recovery
+
+- Added the Ray training executor, immutable S3 checkpoint and model objects, and explicit resume references in PostgreSQL attempt history.
+- Verified a real worker SIGKILL after epoch 2. A new attempt restores Adam step 12 and resumes at epoch 3 when the retry budget permits it.
+- Added S3 integrity and recovery tests with SeaweedFS, Ray Jobs, Ray Train and PostgreSQL. Worker, preemption and Train-controller retry budgets remain zero.
+- MLP-010 is In review. PR #12 merged MLP-009 into main. Learning checkpoints remain pending.
+
 ## 2026-11-17 — v0.13 MLP-009 Ray Train CPU DDP
 
 - Reused the tiny regressor, synthetic split and artifact format in a two-worker Ray Train v2 job with real PyTorch DDP and Gloo.

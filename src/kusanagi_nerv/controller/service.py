@@ -115,6 +115,7 @@ class Controller:
                 observation.status,
                 failure_kind=observation.failure_kind,
                 result=observation.result,
+                checkpoint=observation.checkpoint,
             )
             logger.info(
                 "owner=%s job=%s attempt=%s submission=%s epoch=%s observation=%s",

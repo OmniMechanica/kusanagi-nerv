@@ -26,19 +26,28 @@ async def serve(args: argparse.Namespace) -> None:
     try:
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         store = AttemptRepository(sessions)
-        if args.executor == "ray":
+        if args.executor in {"ray", "ray-training"}:
             if args.ray_info_file is None:
-                raise ValueError("--ray-info-file is required with --executor ray")
+                raise ValueError("--ray-info-file is required with a Ray executor")
             info = json.loads(args.ray_info_file.read_text())
-            executor = RayJobsExecutor(
-                store,
-                RayJobsSettings(
-                    address=info["address"],
-                    cluster_id=info["cluster_id"],
-                    token=Path(info["token_file"]).read_text().strip(),
-                    timeout_seconds=min(args.executor_timeout_seconds, 3),
-                ),
+            ray_settings = RayJobsSettings(
+                address=info["address"],
+                cluster_id=info["cluster_id"],
+                token=Path(info["token_file"]).read_text().strip(),
+                timeout_seconds=min(args.executor_timeout_seconds, 3),
             )
+            if args.executor == "ray-training":
+                from kusanagi_nerv.executors.ray_training import RayTrainingExecutor
+                from kusanagi_nerv.training.object_store import ObjectStoreSettings
+
+                executor = RayTrainingExecutor(
+                    store,
+                    ray_settings,
+                    ObjectStoreSettings.from_environment(),
+                    kill_after_epoch=args.experiment_kill_after_epoch,
+                )
+            else:
+                executor = RayJobsExecutor(store, ray_settings)
         else:
             executor = SimulatedExecutor(
                 sessions, duration_seconds=args.simulation_seconds
@@ -49,7 +58,7 @@ async def serve(args: argparse.Namespace) -> None:
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, task.cancel)
         logging.getLogger(__name__).info(
-            "Starting executor=%s owner=%s; dummy/simulated work only, no model training",
+            "Starting executor=%s owner=%s",
             executor.kind,
             controller.owner,
         )
@@ -68,13 +77,24 @@ async def serve(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="KUSANAGI NERV durable controller")
-    parser.add_argument("--executor", required=True, choices=["simulated", "ray"])
+    parser.add_argument(
+        "--executor", required=True, choices=["simulated", "ray", "ray-training"]
+    )
     parser.add_argument("--ray-info-file", type=Path)
     parser.add_argument("--lease-seconds", type=float, default=30)
     parser.add_argument("--poll-seconds", type=float, default=1)
     parser.add_argument("--executor-timeout-seconds", type=float, default=5)
     parser.add_argument("--simulation-seconds", type=float, default=3)
+    parser.add_argument(
+        "--experiment-kill-after-epoch",
+        type=int,
+        help="Kill rank zero after publishing this epoch on attempt one",
+    )
     args = parser.parse_args()
+    if args.experiment_kill_after_epoch is not None and args.executor != "ray-training":
+        parser.error(
+            "The checkpoint failure experiment requires --executor ray-training"
+        )
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
     try:
         asyncio.run(serve(args))
