@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -40,12 +41,51 @@ def object_store():
         pytest.skip("Install the recovery extra")
     if not os.environ.get("KUSANAGI_S3_ENDPOINT"):
         pytest.skip("Start local S3 storage and set KUSANAGI_S3_* variables")
-    from kusanagi_nerv.training.object_store import ObjectStore, ObjectStoreSettings
+    from botocore.exceptions import (
+        ClientError,
+        ConnectionClosedError,
+        ConnectionError,
+        ReadTimeoutError,
+    )
+
+    from kusanagi_nerv.training.object_store import (
+        ObjectStore,
+        ObjectStoreSettings,
+        StorageUnavailable,
+    )
 
     store = ObjectStore(ObjectStoreSettings.from_environment())
-    store.client.head_bucket(Bucket=store.settings.bucket)
+    probe_id = str(uuid4())
     owned = []
     try:
+        # Container health and HeadBucket can succeed before the volume can
+        # serve object writes. Check the whole data path with an owned key.
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                store.client.head_bucket(Bucket=store.settings.bucket)
+                if not owned:
+                    owned.append(probe_id)
+                uri, digest = store.publish(f"jobs/{probe_id}/readiness", b"ready")
+                assert store.read(uri, digest) == b"ready"
+                break
+            except (
+                ConnectionError,
+                ConnectionClosedError,
+                ReadTimeoutError,
+                ClientError,
+                StorageUnavailable,
+            ) as exc:
+                cause = exc.__cause__ if isinstance(exc, StorageUnavailable) else exc
+                if isinstance(cause, ClientError) and cause.response[
+                    "ResponseMetadata"
+                ]["HTTPStatusCode"] not in {404, 500, 503}:
+                    raise
+                if time.monotonic() >= deadline:
+                    pytest.fail(
+                        f"Local S3 bucket did not become ready ({type(cause).__name__})"
+                    )
+                time.sleep(0.25)
         yield store, owned
     finally:
         for job_id in owned:
