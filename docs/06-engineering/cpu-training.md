@@ -54,6 +54,9 @@ separate seeded permutation assigns 384 rows to training and 128 to evaluation.
 The data and split seeds are fixed by the dataset version, so changing `--seed`
 changes weight initialization and minibatch order while keeping evaluation rows
 comparable. The evaluation split is used for reporting, with a fixed epoch budget.
+Each model uses its own CPU generator for parameter initialization. Concurrent
+Python callers get the same initial weights as sequential calls with their seeds
+and leave PyTorch's default CPU RNG state untouched.
 
 Each training batch performs an Adam update on mean squared error (MSE). The
 reported training MSE averages batch losses weighted by the number of examples.
@@ -103,7 +106,9 @@ uv run --locked --extra training pytest -q tests/training
 CI runs the same CPU workload on Linux. Tests train in separate processes, verify
 the returned path and file hash, compare repeat runs, reload the model for an
 independent forward pass and check its reported metrics against that output. The
-failure cases cover write interruption and an existing destination.
+failure cases cover write interruption and an existing destination. A threaded
+test synchronizes model construction and verifies both the weights and the CPU
+RNG state across concurrent calls.
 
 Learning checkpoint: explain why the held-out evaluation MSE measures something
 different from controller lease health, and which state would let training resume

@@ -171,8 +171,8 @@ for model loading, seed behavior and the artifact contract.
   training, held-out metrics and loadable model weights with metadata. In review;
   learning drill pending.
 
-The full suite has 330 tests across five suites: 252 fast, 65 PostgreSQL, 5 Ray
-Core, 5 Ray Jobs/PostgreSQL and 3 PyTorch CPU training cases. Each integration
+The full suite has 331 tests across five suites: 252 fast, 65 PostgreSQL, 5 Ray
+Core, 5 Ray Jobs/PostgreSQL and 4 PyTorch CPU training cases. Each integration
 suite requires its documented environment.
 See the [progress journal](docs/03-planning/progress.md)
 for local verification, hosted checks and scope. Static analysis with mypy/Pyright

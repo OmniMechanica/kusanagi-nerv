@@ -4,7 +4,9 @@ import hashlib
 import json
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
@@ -12,6 +14,34 @@ from kusanagi_nerv.training.config import TrainingConfig
 
 pytestmark = pytest.mark.training
 torch = pytest.importorskip("torch")
+
+
+def test_concurrent_model_initialization_uses_independent_rngs(monkeypatch) -> None:
+    from kusanagi_nerv.training.loop import build_model
+
+    seeds = (42, 43, 42, 43)
+    reference = {seed: build_model(seed).state_dict() for seed in set(seeds)}
+    barrier = Barrier(len(seeds), timeout=10)
+    reset_parameters = torch.nn.Linear.reset_parameters
+
+    def synchronize_reset(layer):
+        # Bring all workers to the same layer before any of them draws weights.
+        barrier.wait()
+        reset_parameters(layer)
+
+    monkeypatch.setattr(torch.nn.Linear, "reset_parameters", synchronize_reset)
+    rng_before = torch.get_rng_state()
+    try:
+        with ThreadPoolExecutor(max_workers=len(seeds)) as pool:
+            models = list(pool.map(build_model, seeds))
+        rng_after = torch.get_rng_state()
+    finally:
+        torch.set_rng_state(rng_before)
+
+    for seed, model in zip(seeds, models, strict=True):
+        for name, weight in model.state_dict().items():
+            assert torch.equal(weight, reference[seed][name]), (seed, name)
+    assert torch.equal(rng_before, rng_after)
 
 
 def run_training(

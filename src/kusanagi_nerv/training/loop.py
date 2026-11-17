@@ -39,13 +39,26 @@ def synthetic_split() -> tuple[Tensor, Tensor, Tensor, Tensor]:
     return features[train], targets[train], features[evaluation], targets[evaluation]
 
 
+def _seeded_linear(inputs: int, outputs: int, generator: torch.Generator) -> nn.Linear:
+    # Allocate without drawing from the default CPU RNG, then initialize both
+    # tensors with Linear's usual bounds and the caller's private generator.
+    layer = nn.Linear(inputs, outputs, device="meta", dtype=torch.float32)
+    layer.to_empty(device="cpu")
+    nn.init.kaiming_uniform_(layer.weight, a=math.sqrt(5), generator=generator)
+    if layer.bias is not None:
+        bound = 1 / math.sqrt(inputs)
+        nn.init.uniform_(layer.bias, -bound, bound, generator=generator)
+    return layer
+
+
 class TinyRegressor(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, seed: int = 0) -> None:
         super().__init__()
+        generator = torch.Generator(device="cpu").manual_seed(seed)
         self.layers = nn.Sequential(
-            nn.Linear(4, 24, device="cpu", dtype=torch.float32),
+            _seeded_linear(4, 24, generator),
             nn.ReLU(),
-            nn.Linear(24, 1, device="cpu", dtype=torch.float32),
+            _seeded_linear(24, 1, generator),
         )
 
     def forward(self, features: Tensor) -> Tensor:
@@ -53,10 +66,7 @@ class TinyRegressor(nn.Module):
 
 
 def build_model(seed: int) -> TinyRegressor:
-    # Linear layers use the default CPU RNG. Restore its state after construction.
-    with torch.random.fork_rng(devices=[]):
-        torch.random.default_generator.manual_seed(seed)
-        return TinyRegressor()
+    return TinyRegressor(seed)
 
 
 def train_epoch(
