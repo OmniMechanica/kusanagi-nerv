@@ -371,6 +371,7 @@ class AttemptRepository(TransactionalRepository):
         result: ExecutionResult | None = None,
         checkpoint: CheckpointRef | None = None,
         retry_checkpoint: CheckpointRef | None = None,
+        checkpoint_reconciled: bool = False,
     ) -> Claim | None:
         if not isinstance(status, ExecutionStatus):
             raise TypeError("Expected ExecutionStatus")
@@ -421,6 +422,10 @@ class AttemptRepository(TransactionalRepository):
                     attempt.failure_kind = failure_kind
                     if retry_checkpoint is not None:
                         attempt.retry_checkpoint = asdict(retry_checkpoint)
+                if status == ExecutionStatus.FAILED and checkpoint_reconciled:
+                    job.checkpoint_uri = (
+                        retry_checkpoint.uri if retry_checkpoint else None
+                    )
                 if status == ExecutionStatus.SUCCEEDED:
                     new_status = JobStatus.SUCCEEDED
                 elif cancelling and status in (

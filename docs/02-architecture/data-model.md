@@ -50,7 +50,10 @@ for its successor. It backfills the prior selection from transient training
 attempts' published references. The claim transaction copies this field to the
 successor's `resume_checkpoint` before dispatch. The reference can come from an
 earlier attempt if the one that failed published no usable checkpoint. Training
-retry claims keep the same executor and target. The success transaction also sets
+retry claims keep the same executor and target. When a failed attempt completes
+its recovery search, the same transaction sets `jobs.checkpoint_uri` to the
+verified selection or clears it if no usable checkpoint remains. The attempt's
+publication history is kept. The success transaction also sets
 `jobs.artifact_uri` and records the restored epoch/Adam step in the attempt result.
 See [checkpoint recovery](../06-engineering/checkpoint-recovery.md).
 

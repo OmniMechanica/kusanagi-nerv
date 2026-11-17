@@ -19,6 +19,7 @@ from kusanagi_nerv.repositories.attempts import AttemptRepository, DispatchRecor
 from kusanagi_nerv.training.distributed_config import START_PREFIX
 from kusanagi_nerv.training.object_store import (
     ObjectIntegrityError,
+    ObjectNotFound,
     ObjectStore,
     ObjectStoreSettings,
     attempt_prefix,
@@ -152,12 +153,13 @@ class RayTrainingExecutor(RayJobsExecutor):
             FailureKind.TRANSIENT if retry else FailureKind.PERMANENT,
             checkpoint=checkpoint,
             retry_checkpoint=retry,
+            checkpoint_reconciled=True,
         )
 
     async def _verified(self, uri: str, checksum: str) -> bool:
         try:
             await asyncio.to_thread(self.objects.read, uri, checksum)
-        except ObjectIntegrityError:
+        except (ObjectIntegrityError, ObjectNotFound):
             return False
         return True
 

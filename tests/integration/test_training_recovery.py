@@ -9,21 +9,28 @@ import os
 import subprocess
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx2
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from kusanagi_nerv.api.app import create_app
 from kusanagi_nerv.controller.service import Controller
-from kusanagi_nerv.db.models import AttemptRow
-from kusanagi_nerv.domain.execution import ExecutionStatus, ExecutorUnavailable
+from kusanagi_nerv.db.models import AttemptRow, JobRow
+from kusanagi_nerv.domain.execution import (
+    CheckpointRef,
+    ExecutionStatus,
+    ExecutorUnavailable,
+    FailureKind,
+)
 from kusanagi_nerv.executors.ray_jobs import RayJobsSettings
 from kusanagi_nerv.repositories.attempts import AttemptRepository
-from kusanagi_nerv.training.recovery_config import INPUT_ENV
+from kusanagi_nerv.training.recovery_config import INPUT_ENV, WORKER_LOST_EXIT
 from tests.integration.test_api_restart import api_process
 from tests.integration.test_ray_jobs import ray_info_file as ray_info_file
 
@@ -158,6 +165,59 @@ def dispatch_record():
         started=True,
         revoked=True,
     )
+
+
+async def test_interrupted_s3_download_preserves_uncertain_outcome(monkeypatch):
+    pytest.importorskip("boto3")
+    from botocore.response import StreamingBody
+    from botocore.stub import Stubber
+    from urllib3.exceptions import ProtocolError
+
+    from kusanagi_nerv.executors.ray_training import RayTrainingExecutor
+    from kusanagi_nerv.training.object_store import ObjectStoreSettings
+
+    class InterruptedStream(io.BytesIO):
+        def read(self, size=-1):
+            raise ProtocolError("Connection broke during the object body")
+
+    executor = RayTrainingExecutor(
+        None,
+        RayJobsSettings("http://127.0.0.1:8265", "session_stream", "a" * 64),
+        ObjectStoreSettings("http://127.0.0.1:58333", "test-bucket", "fake", "fake"),
+    )
+    record = dispatch_record()
+    checkpoint = CheckpointRef(executor.objects.uri("previous.pt"), "b" * 64, 2)
+    record.claim.resume_checkpoint = checkpoint
+    raw = InterruptedStream()
+    monkeypatch.setattr(
+        executor.objects.client,
+        "list_objects_v2",
+        lambda **_: {"IsTruncated": False},
+    )
+    try:
+        with Stubber(executor.objects.client) as s3:
+            s3.add_response("get_object", {"Body": StreamingBody(raw, 128)})
+            for code, status in [
+                ("NoSuchBucket", 404),
+                ("404", 404),
+                ("AccessDenied", 403),
+            ]:
+                s3.add_client_error(
+                    "get_object", service_error_code=code, http_status_code=status
+                )
+            controller = Controller(None, executor)
+            for _ in range(4):
+                observation = await controller._call(
+                    lambda: executor._failed(
+                        record, {"driver_exit_code": WORKER_LOST_EXIT}
+                    )
+                )
+                assert observation.status == ExecutionStatus.UNKNOWN
+                assert not observation.checkpoint_reconciled
+            s3.assert_no_pending_responses()
+        assert raw.closed
+    finally:
+        await executor.aclose()
 
 
 async def test_cancel_sends_ray_stop_without_consulting_s3(monkeypatch):
@@ -312,9 +372,7 @@ async def test_success_requires_matching_artifact_bytes(object_store):
 
 
 async def test_worker_loss_skips_checkpoints_with_invalid_metadata(object_store):
-    from kusanagi_nerv.domain.execution import CheckpointRef, FailureKind
     from kusanagi_nerv.executors.ray_training import RayTrainingExecutor
-    from kusanagi_nerv.training.recovery_config import WORKER_LOST_EXIT
 
     store, owned = object_store
     record = dispatch_record()
@@ -350,6 +408,113 @@ async def test_worker_loss_skips_checkpoints_with_invalid_metadata(object_store)
             == recovered.retry_checkpoint
             == CheckpointRef(*earlier, 3)
         )
+    finally:
+        await executor.aclose()
+
+
+@pytest.mark.parametrize("lost_inherited", [False, True], ids=["fallback", "deleted"])
+async def test_worker_loss_reconciles_published_checkpoint_in_api(
+    lost_inherited, object_store, engine, repository, monkeypatch
+):
+    from kusanagi_nerv.executors.ray_training import RayTrainingExecutor
+    from kusanagi_nerv.training.object_store import attempt_prefix, checkpoint_key
+
+    store, owned = object_store
+    attempts = AttemptRepository(async_sessionmaker(engine, expire_on_commit=False))
+    executor = RayTrainingExecutor(
+        attempts,
+        RayJobsSettings("http://127.0.0.1:8265", "session_reconcile", "a" * 64),
+        store.settings,
+    )
+    controller = Controller(attempts, executor)
+
+    async def observe_worker_loss(submission_id):
+        record = await attempts.read_dispatch(
+            submission_id, executor.target, executor.kind
+        )
+        assert record is not None and record.started
+        return await executor._failed(record, {"driver_exit_code": WORKER_LOST_EXIT})
+
+    monkeypatch.setattr(executor, "lookup", observe_worker_loss)
+    claim_options = {
+        "owner": controller.owner,
+        "executor_kind": executor.kind,
+        "executor_target": executor.target,
+        "lease_seconds": 30,
+    }
+
+    try:
+        app = create_app(repository)
+        async with (
+            app.router.lifespan_context(app),
+            httpx2.AsyncClient(
+                transport=httpx2.ASGITransport(app), base_url="http://test"
+            ) as api,
+        ):
+            submitted = await api.post(
+                "/v1/jobs", json={**SPEC, "max_retries": int(lost_inherited)}
+            )
+            assert submitted.status_code == 202
+            job_id = submitted.json()["job_id"]
+            owned.append(job_id)
+            location = submitted.headers["Location"]
+            first = await attempts.claim_next(**claim_options)
+            assert first is not None
+            assert await attempts.begin_dispatch(first, executor.kind)
+            prefix = attempt_prefix(job_id, first.submission_id)
+            earlier_key = checkpoint_key(prefix, 3)
+            earlier = CheckpointRef(*store.publish(earlier_key, b"good checkpoint"), 3)
+
+            if lost_inherited:
+                controller.claim = first
+                await controller.tick()
+                retrying = (await api.get(location)).json()
+                assert retrying["status"] == "retrying"
+                assert retrying["checkpoint_uri"] == earlier.uri
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        update(JobRow)
+                        .where(JobRow.job_id == first.job.job_id)
+                        .values(retry_not_before=func.clock_timestamp())
+                    )
+                second = await attempts.claim_next(**claim_options)
+                assert second is not None and second.resume_checkpoint == earlier
+                assert await attempts.begin_dispatch(second, executor.kind)
+                store.client.delete_object(
+                    Bucket=store.settings.bucket, Key=earlier_key
+                )
+                controller.claim = second
+            else:
+                latest_key = checkpoint_key(prefix, 4)
+                latest = CheckpointRef(
+                    *store.publish(latest_key, b"original epoch 4"), 4
+                )
+                controller.claim = await attempts.observe(
+                    first, ExecutionStatus.RUNNING, checkpoint=latest
+                )
+                assert (await api.get(location)).json()["checkpoint_uri"] == latest.uri
+                store.client.put_object(
+                    Bucket=store.settings.bucket,
+                    Key=latest_key,
+                    Body=b"damaged epoch 4!",
+                    Metadata={"sha256": latest.sha256},
+                )
+
+            await controller.tick()
+            assert controller.claim is None
+            view = (await api.get(location)).json()
+            assert view["status"] == "failed"
+            assert view["checkpoint_uri"] == (None if lost_inherited else earlier.uri)
+            assert view["attempt"] == int(lost_inherited) + 1
+            rows = await attempt_rows(engine)
+            if lost_inherited:
+                assert rows[0]["published_checkpoint"] == asdict(earlier)
+                assert rows[1]["resume_checkpoint"] == asdict(earlier)
+                assert rows[1]["retry_checkpoint"] is None
+                assert rows[1]["failure_kind"] == FailureKind.PERMANENT
+            else:
+                assert rows[0]["published_checkpoint"] == asdict(latest)
+                assert rows[0]["retry_checkpoint"] == asdict(earlier)
     finally:
         await executor.aclose()
 

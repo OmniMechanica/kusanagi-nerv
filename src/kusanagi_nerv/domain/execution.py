@@ -54,6 +54,8 @@ class ExecutionObservation:
     result: ExecutionResult | None = None
     checkpoint: CheckpointRef | None = None
     retry_checkpoint: CheckpointRef | None = None
+    # A completed recovery search can establish that no usable checkpoint exists.
+    checkpoint_reconciled: bool = False
 
 
 @dataclass(frozen=True, slots=True)

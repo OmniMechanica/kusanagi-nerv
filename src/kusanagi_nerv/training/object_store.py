@@ -3,6 +3,7 @@
 import hashlib
 import os
 import re
+from contextlib import closing
 from dataclasses import dataclass, field
 from typing import Self
 from urllib.parse import urlsplit
@@ -18,6 +19,10 @@ MAX_BYTES = 4 * 1024 * 1024
 
 class StorageUnavailable(OSError):
     """The store cannot establish an object operation's outcome."""
+
+
+class ObjectNotFound(FileNotFoundError):
+    """S3 explicitly confirmed that the requested key does not exist."""
 
 
 class ObjectIntegrityError(ValueError):
@@ -135,9 +140,18 @@ class ObjectStore:
             response = self.client.get_object(
                 Bucket=self.settings.bucket, Key=self._key(uri)
             )
-            with response["Body"] as stream:
+            # StreamingBody.__enter__ returns the raw transport stream. Read
+            # through the wrapper so botocore translates body read errors.
+            with closing(response["Body"]) as stream:
                 data = stream.read(MAX_BYTES + 1)
-        except (BotoCoreError, ClientError) as exc:
+        except ClientError as exc:
+            if (
+                exc.response["Error"]["Code"] == "NoSuchKey"
+                and exc.response["ResponseMetadata"]["HTTPStatusCode"] == 404
+            ):
+                raise ObjectNotFound("S3 object does not exist") from exc
+            raise StorageUnavailable("S3 object could not be read") from exc
+        except BotoCoreError as exc:
             raise StorageUnavailable("S3 object could not be read") from exc
         if (
             not 0 < len(data) <= MAX_BYTES
@@ -186,7 +200,7 @@ class ObjectStore:
             try:
                 checksum = self.digest(key)
                 self.read(uri, checksum)
-            except ObjectIntegrityError:
+            except (ObjectIntegrityError, ObjectNotFound):
                 continue
             return CheckpointRef(uri, checksum, epoch)
         return None
