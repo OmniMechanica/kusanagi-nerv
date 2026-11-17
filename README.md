@@ -198,9 +198,9 @@ exact saved model, Adam state and minibatch generator. See the [recovery runbook
   worker failure, explicit S3 checkpoint restore and final artifact publication.
   In review.
 
-The full suite has 337 tests across seven suites: 252 fast, 65 PostgreSQL, 5 Ray
-Core, 5 Ray Jobs/PostgreSQL, 4 PyTorch CPU, 3 Ray Train and 3 S3 recovery cases. Each integration
-suite requires its documented environment.
+The full suite has 342 tests across seven suites: 252 fast, 66 PostgreSQL, 5 Ray
+Core, 5 Ray Jobs/PostgreSQL, 4 PyTorch CPU, 3 Ray Train and 7 S3 recovery cases.
+Each integration suite requires its documented environment.
 See the [progress journal](docs/03-planning/progress.md)
 for local verification, hosted checks and scope. Static analysis with mypy/Pyright
 remains a P1 follow-up; runtime schema validation and Ruff are enforced now.

@@ -20,6 +20,10 @@ class StorageUnavailable(OSError):
     """The store cannot establish an object operation's outcome."""
 
 
+class ObjectIntegrityError(ValueError):
+    """The object has invalid integrity metadata, size or bytes."""
+
+
 @dataclass(frozen=True, slots=True)
 class ObjectStoreSettings:
     endpoint: str
@@ -139,7 +143,7 @@ class ObjectStore:
             not 0 < len(data) <= MAX_BYTES
             or hashlib.sha256(data).hexdigest() != expected_sha256
         ):
-            raise ValueError("S3 object integrity verification failed")
+            raise ObjectIntegrityError("S3 object integrity verification failed")
         return data
 
     def digest(self, key: str) -> str:
@@ -152,10 +156,14 @@ class ObjectStore:
             not re.fullmatch(r"[0-9a-f]{64}", sha)
             or not 0 < response["ContentLength"] <= MAX_BYTES
         ):
-            raise StorageUnavailable("S3 object has invalid integrity metadata")
+            raise ObjectIntegrityError("S3 object has invalid integrity metadata")
         return sha
 
-    def latest_checkpoint(self, prefix: str, epochs: int) -> CheckpointRef | None:
+    def latest_checkpoint(
+        self, prefix: str, epochs: int, *, after_epoch: int = 0
+    ) -> CheckpointRef | None:
+        if epochs <= after_epoch:
+            return None
         root = f"{prefix}/checkpoints/"
         try:
             response = self.client.list_objects_v2(
@@ -170,10 +178,15 @@ class ObjectStore:
         available = []
         for obj in response.get("Contents", []):
             match = re.fullmatch(r"(\d{4})\.pt", obj["Key"].removeprefix(root))
-            if match and 1 <= int(match[1]) <= epochs:
+            if match and after_epoch < int(match[1]) <= epochs:
                 available.append(int(match[1]))
-        if not available:
-            return None
-        epoch = max(available)
-        key = checkpoint_key(prefix, epoch)
-        return CheckpointRef(self.uri(key), self.digest(key), epoch)
+        for epoch in sorted(available, reverse=True):
+            key = checkpoint_key(prefix, epoch)
+            uri = self.uri(key)
+            try:
+                checksum = self.digest(key)
+                self.read(uri, checksum)
+            except ObjectIntegrityError:
+                continue
+            return CheckpointRef(uri, checksum, epoch)
+        return None

@@ -47,8 +47,11 @@ checks startup cleanup when `SIGTERM` arrives before Ray imports. See [Ray Train
 
 MLP-010 adds the `recovery` marker and a CI job with real Ray Jobs, Ray Train,
 PostgreSQL and an S3-compatible server. Cases cover immutable object writes and
-read integrity, lost submit acknowledgement, real worker death after an epoch
-checkpoint and controller retry budgets of one and zero. See [checkpoint recovery](checkpoint-recovery.md).
+read integrity, lost submit acknowledgement and controller retry budgets of zero,
+one and two. The two-retry case loses a second worker after restore and checks
+that the third attempt still resumes from the original checkpoint. Separate cases
+exercise Ray cancellation during an S3 outage and reject object data with a
+matching SHA-256 metadata value but a different computed hash. See [checkpoint recovery](checkpoint-recovery.md).
 
 ## Non-flaky testing principles
 

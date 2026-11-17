@@ -147,7 +147,9 @@ class RayJobsExecutor:
         ):
             raise ExecutorUnavailable("Ray cluster identity is unavailable or changed")
 
-    async def _lookup(self, record: DispatchRecord) -> ExecutionObservation:
+    async def _lookup(
+        self, record: DispatchRecord, *, for_stop: bool = False
+    ) -> ExecutionObservation:
         if record.revoked and not record.started:
             return ExecutionObservation(ExecutionStatus.CANCELLED)
         await self._check_cluster()
@@ -178,8 +180,12 @@ class RayJobsExecutor:
         if status == "STOPPED":
             return ExecutionObservation(ExecutionStatus.CANCELLED)
         if status == "FAILED":
+            if for_stop:
+                return ExecutionObservation(ExecutionStatus.FAILED)
             return await self._failed(record, data)
-        if status == "PENDING":
+        if status == "PENDING" or (for_stop and status == "RUNNING"):
+            # A verified active Ray Job can be stopped without parsing its
+            # workload logs or probing services that the workload depends on.
             return ExecutionObservation(ExecutionStatus.PENDING)
         if status not in {"RUNNING", "SUCCEEDED"}:
             return UNKNOWN
@@ -277,7 +283,7 @@ class RayJobsExecutor:
         record = await self.store.revoke_dispatch(submission_id, self.target, self.kind)
         if record is None:
             return UNKNOWN
-        observation = await self._lookup(record)
+        observation = await self._lookup(record, for_stop=True)
         if observation.status in {
             ExecutionStatus.SUCCEEDED,
             ExecutionStatus.FAILED,
@@ -286,5 +292,5 @@ class RayJobsExecutor:
             return observation
         if observation.status in {ExecutionStatus.PENDING, ExecutionStatus.RUNNING}:
             await self._request("POST", f"/api/jobs/{submission_id}/stop")
-            return await self.lookup(submission_id)
+            return await self._lookup(record, for_stop=True)
         return UNKNOWN

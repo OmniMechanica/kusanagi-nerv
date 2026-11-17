@@ -92,6 +92,10 @@ def _worker_loop(values: dict) -> None:
             store, recovery, config, model.module, optimizer, rng
         )
         first_epoch = last_epoch + 1
+        if rank == 0 and last_epoch > 0 and recovery.kill_after_epoch == last_epoch:
+            # The repeated-failure test exercises a loss after restore and
+            # before this attempt has published any new checkpoint.
+            os.kill(os.getpid(), signal.SIGKILL)
 
     for epoch in range(first_epoch, spec.epochs + 1):
         permutation = torch.randperm(len(train_x), generator=rng, device="cpu")

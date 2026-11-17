@@ -53,6 +53,7 @@ class ExecutionObservation:
     failure_kind: FailureKind = FailureKind.PERMANENT
     result: ExecutionResult | None = None
     checkpoint: CheckpointRef | None = None
+    retry_checkpoint: CheckpointRef | None = None
 
 
 @dataclass(frozen=True, slots=True)

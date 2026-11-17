@@ -70,34 +70,42 @@ reservation. Storage scope is local loopback on a single host.
    epoch 2. Ray Train recovery is set to zero. The Ray Jobs driver uses exit code
    `75` only when the typed Ray error establishes worker actor death, including
    Ray 2.60's worker health-check wrapper. The controller waits for Ray Jobs
-   `FAILED` before inspecting the failed attempt's checkpoint prefix. It retries
-   only with a usable checkpoint and available budget. Network uncertainty keeps
-   the same submission identity and consumes no additional attempt.
-3. The transaction that creates attempt 2 copies the epoch-2 URI, SHA-256 and
-   epoch into `resume_checkpoint`. The adapter passes that exact reference to the
-   new driver. Each rank reads and verifies the object before loading it with
+   `FAILED` before inspecting the failed attempt's checkpoint prefix. It verifies
+   candidate metadata and bytes from newest to oldest and stores the selected
+   reference in `retry_checkpoint`. A failed attempt that published no usable
+   checkpoint can select its verified `resume_checkpoint` again. A retry requires
+   available budget. Network uncertainty keeps the same submission identity and
+   consumes no additional attempt.
+3. The transaction that creates the successor copies the selected URI, SHA-256
+   and epoch into `resume_checkpoint`. The adapter passes that exact reference to
+   the new driver. Each rank reads and verifies the object before loading it with
    `weights_only=True`. Restore validates the job, source attempt, epoch, model,
    dataset, configuration, worker count, device and PyTorch version. It restores
    model weights, Adam state and the minibatch generator, then starts epoch 3.
-4. Rank zero publishes new checkpoints under attempt 2's prefix. After
+4. Rank zero publishes new checkpoints under the successor's prefix. After
    `fit()` succeeds, the driver publishes final inference weights to that
-   attempt's `model.pt` S3 key. The adapter verifies the artifact and final
-   checkpoint metadata before committing job success. `GET` exposes
+   attempt's `model.pt` S3 key. The adapter downloads both the artifact and final
+   checkpoint with the object size limit and verifies their SHA-256 before
+   committing job success. `GET` exposes
    `checkpoint_uri` and `artifact_uri`; the attempt records retain the selected
-   checkpoint, starting epoch and restored Adam step.
+   checkpoint, the checkpoint each attempt published, starting epoch and restored
+   Adam step.
 
 The checkpoint itself contains optimizer state for a same-configuration restart.
 The final model artifact uses the MLP-008 inference format. Read a checkpoint via
 the S3 API and verify SHA-256 before loading. The workflow retains Ray Jobs records
 and relies on the previous attempt's objects remaining readable. A failure after
 the last checkpoint and before artifact publication can resume from the previous
-epoch if that checkpoint is available. A failed attempt without a usable
-checkpoint is terminal. Other confirmed failures are currently permanent.
+epoch if that checkpoint is available. A failed attempt is terminal when neither
+its own nor its inherited checkpoint can be used, or its retry budget is
+exhausted. Other confirmed failures are currently permanent.
 
 No overwrite or list-by-global-latest operation crosses an attempt boundary.
 Ownership of a PostgreSQL lease and the existing Ray Jobs dispatch/cancellation
-fences still apply. For this CPU experiment the Boto3 client uses explicit
-loopback settings and bounded I/O. Availability of a production S3 deployment,
+fences still apply. An owned running or pending Ray Job can receive `stop` during
+an S3 outage. The controller waits for Ray to report a terminal state. For this
+CPU experiment the Boto3 client uses explicit loopback settings and bounded I/O.
+Availability of a production S3 deployment,
 cloud identities, distributed storage topology and lifecycle policy require
 separate validation. [S3 PutObject conditionals](https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html)
 
@@ -114,13 +122,19 @@ step 12. With budget `1`, attempt two resumes from epoch 3, publishes an epoch-5
 checkpoint and produces predictions that match an uninterrupted equivalent
 batch within float tolerance. With budget `0`, Ray still fails after the worker
 loss and PostgreSQL records one failed attempt with its checkpoint and no model.
+With budget `2`, attempt two loses a worker immediately after restoring epoch 2,
+before publishing a checkpoint. Its retry selection still points to attempt one's
+checkpoint, and attempt three starts at epoch 3. The S3 tests check that matching
+metadata cannot establish success for corrupted bytes and that an invalid digest
+on the latest checkpoint leaves earlier valid checkpoints eligible for retry.
+A Ray Jobs API stub verifies that cancellation sends `stop` during an S3 outage.
 The tests use disposable databases and delete only their own job prefixes.
 
 To inspect the ledger for a job, substitute its UUID below.
 
 ```sql
 SELECT attempt_no, submission_id, failure_kind, published_checkpoint,
-       resume_checkpoint, execution_result
+       resume_checkpoint, retry_checkpoint, execution_result
 FROM job_attempts
 WHERE job_id = '<job UUID>'
 ORDER BY attempt_no;

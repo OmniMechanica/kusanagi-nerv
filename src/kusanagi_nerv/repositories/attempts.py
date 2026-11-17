@@ -171,6 +171,16 @@ class AttemptRepository(TransactionalRepository):
                                             == executor_target,
                                         ),
                                     ),
+                                    or_(
+                                        AttemptRow.executor_kind != "ray-training-v1",
+                                        and_(
+                                            AttemptRow.retry_checkpoint.is_not(None),
+                                            func.jsonb_typeof(
+                                                AttemptRow.retry_checkpoint
+                                            )
+                                            == "object",
+                                        ),
+                                    ),
                                 )
                                 .exists(),
                             ),
@@ -194,7 +204,7 @@ class AttemptRepository(TransactionalRepository):
                 resume_checkpoint = None
                 if job.status == JobStatus.RETRYING:
                     resume_checkpoint = await session.scalar(
-                        select(AttemptRow.published_checkpoint).where(
+                        select(AttemptRow.retry_checkpoint).where(
                             AttemptRow.job_id == job.job_id,
                             AttemptRow.attempt_no == job.attempt,
                         )
@@ -360,6 +370,7 @@ class AttemptRepository(TransactionalRepository):
         failure_kind: FailureKind = FailureKind.PERMANENT,
         result: ExecutionResult | None = None,
         checkpoint: CheckpointRef | None = None,
+        retry_checkpoint: CheckpointRef | None = None,
     ) -> Claim | None:
         if not isinstance(status, ExecutionStatus):
             raise TypeError("Expected ExecutionStatus")
@@ -408,6 +419,8 @@ class AttemptRepository(TransactionalRepository):
                 failed = status in (ExecutionStatus.FAILED, ExecutionStatus.REJECTED)
                 if failed:
                     attempt.failure_kind = failure_kind
+                    if retry_checkpoint is not None:
+                        attempt.retry_checkpoint = asdict(retry_checkpoint)
                 if status == ExecutionStatus.SUCCEEDED:
                     new_status = JobStatus.SUCCEEDED
                 elif cancelling and status in (
@@ -419,6 +432,10 @@ class AttemptRepository(TransactionalRepository):
                     not cancelling
                     and failed
                     and failure_kind == FailureKind.TRANSIENT
+                    and (
+                        attempt.executor_kind != "ray-training-v1"
+                        or retry_checkpoint is not None
+                    )
                     and job.attempt <= job.spec_json["max_retries"]
                 ):
                     new_status = JobStatus.RETRYING

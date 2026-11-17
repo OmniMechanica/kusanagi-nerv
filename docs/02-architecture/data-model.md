@@ -44,8 +44,12 @@ Downgrade refuses to discard Ray attempt history. See [Ray Jobs](../06-engineeri
 Migration `0005_training_checkpoints` adds JSONB `published_checkpoint` and
 `resume_checkpoint` references to `job_attempts`. Each reference contains an S3
 URI, SHA-256 and epoch. A fenced observation can advance the published checkpoint
-and the public `jobs.checkpoint_uri`. On a confirmed retry, the claim transaction
-copies the previous attempt's published reference before dispatch. Training
+and the public `jobs.checkpoint_uri`. Migration `0006_retry_checkpoint` adds
+`retry_checkpoint`, the verified reference selected by a failed training attempt
+for its successor. It backfills the prior selection from transient training
+attempts' published references. The claim transaction copies this field to the
+successor's `resume_checkpoint` before dispatch. The reference can come from an
+earlier attempt if the one that failed published no usable checkpoint. Training
 retry claims keep the same executor and target. The success transaction also sets
 `jobs.artifact_uri` and records the restored epoch/Adam step in the attempt result.
 See [checkpoint recovery](../06-engineering/checkpoint-recovery.md).

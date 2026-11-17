@@ -2,7 +2,7 @@
 
 MLP-004 introduces a separate controller process. The API still only commits and
 reads logical jobs. Start PostgreSQL and apply `alembic upgrade head` using the
-[database guide](postgres.md); the current head is `0005_training_checkpoints`. Neither
+[database guide](postgres.md); the current head is `0006_retry_checkpoint`. Neither
 the API nor the controller creates tables at startup.
 
 MLP-007 adds `--executor ray` for a real dummy CPU workload on a separately running

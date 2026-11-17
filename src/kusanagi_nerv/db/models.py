@@ -126,6 +126,7 @@ class AttemptRow(Base):
     execution_result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     published_checkpoint: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     resume_checkpoint: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    retry_checkpoint: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     lease_owner: Mapped[str] = mapped_column(String(128))
     lease_epoch: Mapped[int]
     lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

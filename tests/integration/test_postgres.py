@@ -15,8 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from kusanagi_nerv.api.app import create_app
 from kusanagi_nerv.db.connection import database_url
 from kusanagi_nerv.db.models import JobRow
+from kusanagi_nerv.domain.execution import CheckpointRef, ExecutionStatus, FailureKind
 from kusanagi_nerv.domain.job_lifecycle import InvalidJobTransition, JobStatus
 from kusanagi_nerv.domain.jobs import Job, JobResources, JobSpecification
+from kusanagi_nerv.repositories.attempts import AttemptRepository
 from kusanagi_nerv.repositories.jobs import JobUpdateConflict, RepositoryUnavailable
 from kusanagi_nerv.repositories.postgres import PostgresJobRepository
 
@@ -264,7 +266,7 @@ async def test_repeated_upgrade_preserves_data_and_schema_matches_models(
     async with engine.connect() as connection:
         assert (
             await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0005_training_checkpoints"
+            == "0006_retry_checkpoint"
         )
 
 
@@ -275,6 +277,48 @@ def test_migration_downgrade_and_upgrade_on_owned_empty_database(
     migrate("downgrade", "base")
     migrate("upgrade", "head")
     migrate("check")
+
+
+async def test_upgrade_preserves_a_pending_training_retry(
+    repository: PostgresJobRepository,
+    job: Job,
+    engine: AsyncEngine,
+    migrate: Callable[..., object],
+) -> None:
+    job = replace(job, spec=replace(job.spec, resources=JobResources(2, 0, 0.25)))
+    await repository.add(job)
+    attempts = AttemptRepository(async_sessionmaker(engine, expire_on_commit=False))
+    claim_options = {
+        "owner": "training-controller",
+        "executor_kind": "ray-training-v1",
+        "executor_target": "test-training-target",
+        "lease_seconds": 30,
+    }
+    first = await attempts.claim_next(**claim_options)
+    assert first is not None
+    checkpoint = CheckpointRef(
+        f"s3://test-bucket/jobs/{job.job_id}/attempts/{first.submission_id}/checkpoints/0002.pt",
+        "a" * 64,
+        2,
+    )
+    await attempts.observe(
+        first,
+        ExecutionStatus.FAILED,
+        failure_kind=FailureKind.TRANSIENT,
+        checkpoint=checkpoint,
+        retry_checkpoint=checkpoint,
+    )
+    migrate("downgrade", "0005_training_checkpoints")
+    migrate("upgrade", "head")
+    async with engine.begin() as connection:
+        await connection.execute(
+            update(JobRow)
+            .where(JobRow.job_id == job.job_id, JobRow.status == JobStatus.RETRYING)
+            .values(retry_not_before=func.clock_timestamp())
+        )
+    successor = await attempts.claim_next(**claim_options)
+    assert successor is not None
+    assert successor.job.attempt == 2 and successor.resume_checkpoint == checkpoint
 
 
 def test_unmigrated_database_returns_503_without_creating_schema(

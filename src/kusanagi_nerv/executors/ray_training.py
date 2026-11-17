@@ -18,6 +18,7 @@ from kusanagi_nerv.domain.execution import (
 from kusanagi_nerv.repositories.attempts import AttemptRepository, DispatchRecord
 from kusanagi_nerv.training.distributed_config import START_PREFIX
 from kusanagi_nerv.training.object_store import (
+    ObjectIntegrityError,
     ObjectStore,
     ObjectStoreSettings,
     attempt_prefix,
@@ -132,16 +133,33 @@ class RayTrainingExecutor(RayJobsExecutor):
     async def _failed(self, record: DispatchRecord, data: dict) -> ExecutionObservation:
         if data.get("driver_exit_code") != WORKER_LOST_EXIT:
             return ExecutionObservation(ExecutionStatus.FAILED)
+        inherited = record.claim.resume_checkpoint
         checkpoint = await asyncio.to_thread(
             self.objects.latest_checkpoint,
             self._prefix(record),
             record.claim.job.spec.epochs - 1,
+            after_epoch=inherited.epoch if inherited else 0,
         )
+        retry = checkpoint
+        if (
+            retry is None
+            and inherited
+            and await self._verified(inherited.uri, inherited.sha256)
+        ):
+            retry = inherited
         return ExecutionObservation(
             ExecutionStatus.FAILED,
-            FailureKind.TRANSIENT if checkpoint else FailureKind.PERMANENT,
+            FailureKind.TRANSIENT if retry else FailureKind.PERMANENT,
             checkpoint=checkpoint,
+            retry_checkpoint=retry,
         )
+
+    async def _verified(self, uri: str, checksum: str) -> bool:
+        try:
+            await asyncio.to_thread(self.objects.read, uri, checksum)
+        except ObjectIntegrityError:
+            return False
+        return True
 
     async def _checkpoint_from_logs(
         self, record: DispatchRecord, logs: str
@@ -160,7 +178,10 @@ class RayTrainingExecutor(RayJobsExecutor):
         uri = self.objects.uri(key)
         if latest.get("uri") != uri:
             return None
-        digest = await asyncio.to_thread(self.objects.digest, key)
+        try:
+            digest = await asyncio.to_thread(self.objects.digest, key)
+        except ObjectIntegrityError:
+            return None
         return (
             CheckpointRef(uri, digest, latest["epoch"])
             if digest == latest.get("sha256")
@@ -202,15 +223,17 @@ class RayTrainingExecutor(RayJobsExecutor):
             or not re.fullmatch(r"[0-9a-f]{64}", event["checksum"])
         ):
             return UNKNOWN
-        digest = await asyncio.to_thread(self.objects.digest, key)
-        if digest != event["checksum"]:
+        digest = event["checksum"]
+        if not await self._verified(event["artifact_uri"], digest):
             return UNKNOWN
+        final_epoch = record.claim.job.spec.epochs
         checkpoint = await asyncio.to_thread(
             self.objects.latest_checkpoint,
             self._prefix(record),
-            record.claim.job.spec.epochs,
+            final_epoch,
+            after_epoch=final_epoch - 1,
         )
-        if checkpoint is None or checkpoint.epoch != record.claim.job.spec.epochs:
+        if checkpoint is None:
             return UNKNOWN
         return ExecutionObservation(
             ExecutionStatus.SUCCEEDED,

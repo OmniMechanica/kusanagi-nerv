@@ -1,6 +1,7 @@
 """Recover a job after a real worker SIGKILL using PostgreSQL, Ray and S3."""
 
 import asyncio
+import hashlib
 import importlib.util
 import io
 import json
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx2
@@ -18,9 +20,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from kusanagi_nerv.controller.service import Controller
 from kusanagi_nerv.db.models import AttemptRow
-from kusanagi_nerv.domain.execution import ExecutorUnavailable
+from kusanagi_nerv.domain.execution import ExecutionStatus, ExecutorUnavailable
 from kusanagi_nerv.executors.ray_jobs import RayJobsSettings
 from kusanagi_nerv.repositories.attempts import AttemptRepository
+from kusanagi_nerv.training.recovery_config import INPUT_ENV
 from tests.integration.test_api_restart import api_process
 from tests.integration.test_ray_jobs import ray_info_file as ray_info_file
 
@@ -142,7 +145,216 @@ def test_s3_publication_is_atomic_and_checks_integrity(object_store) -> None:
     assert store.read(*reference) == b"finished checkpoint"
 
 
-@pytest.mark.parametrize("budget", [1, 0])
+def dispatch_record():
+    # No database or Ray server is needed to exercise the adapter's wire checks.
+    return SimpleNamespace(
+        claim=SimpleNamespace(
+            job=SimpleNamespace(job_id=uuid4(), spec=SimpleNamespace(epochs=5)),
+            submission_id=f"kusanagi-{uuid4()}",
+            attempt_id=uuid4(),
+            resume_checkpoint=None,
+        ),
+        payload_hash="a" * 64,
+        started=True,
+        revoked=True,
+    )
+
+
+async def test_cancel_sends_ray_stop_without_consulting_s3(monkeypatch):
+    pytest.importorskip("boto3")
+    from kusanagi_nerv.executors.ray_training import RayTrainingExecutor
+    from kusanagi_nerv.training.distributed_config import START_PREFIX
+    from kusanagi_nerv.training.object_store import (
+        ObjectStoreSettings,
+        StorageUnavailable,
+    )
+    from kusanagi_nerv.training.recovery_config import CHECKPOINT_PREFIX
+
+    record = dispatch_record()
+    settings = RayJobsSettings("http://127.0.0.1:8265", "session_cancel", "a" * 64)
+    stops = []
+    status = "RUNNING"
+
+    async def revoke(*_):
+        return record
+
+    def ray_response(request):
+        path = request.url.path
+        if path == "/api/version":
+            return httpx2.Response(200, json={"session_name": settings.cluster_id})
+        if path.endswith("/stop"):
+            stops.append(request.method)
+            return httpx2.Response(200, json={"stopped": True})
+        if path.endswith("/logs"):
+            start = {
+                "submission_id": record.claim.submission_id,
+                "rank": 0,
+                "world_size": 2,
+                "device": "cpu",
+                "first_epoch": 1,
+            }
+            checkpoint = {
+                "submission_id": record.claim.submission_id,
+                "epoch": 2,
+                "uri": executor.objects.uri(
+                    f"{executor._prefix(record)}/checkpoints/0002.pt"
+                ),
+                "sha256": "b" * 64,
+            }
+            return httpx2.Response(
+                200,
+                json={
+                    "logs": START_PREFIX
+                    + json.dumps(start)
+                    + "\n"
+                    + CHECKPOINT_PREFIX
+                    + json.dumps(checkpoint)
+                },
+            )
+        return httpx2.Response(
+            200,
+            json={
+                "submission_id": record.claim.submission_id,
+                "entrypoint": executor.entrypoint,
+                "metadata": executor._metadata(record),
+                "status": status,
+            },
+        )
+
+    executor = RayTrainingExecutor(
+        SimpleNamespace(revoke_dispatch=revoke),
+        settings,
+        ObjectStoreSettings("http://127.0.0.1:58333", "test-bucket", "fake", "fake"),
+        transport=httpx2.MockTransport(ray_response),
+    )
+
+    def outage(_):
+        raise StorageUnavailable("Injected controller-side S3 outage")
+
+    monkeypatch.setattr(executor.objects, "digest", outage)
+    try:
+        pending = await executor.cancel(record.claim.submission_id)
+        assert stops == ["POST"] and pending.status == ExecutionStatus.PENDING
+        status = "STOPPED"
+        confirmed = await executor.cancel(record.claim.submission_id)
+        assert confirmed.status == ExecutionStatus.CANCELLED and stops == ["POST"]
+    finally:
+        await executor.aclose()
+
+
+async def test_success_requires_matching_artifact_bytes(object_store):
+    from kusanagi_nerv.executors.ray_training import RayTrainingExecutor
+    from kusanagi_nerv.training.recovery_config import RECOVERY_RESULT_PREFIX
+
+    store, owned = object_store
+    record = dispatch_record()
+    owned.append(str(record.claim.job.job_id))
+    executor = RayTrainingExecutor(
+        None,
+        RayJobsSettings("http://127.0.0.1:8265", "session_integrity", "a" * 64),
+        store.settings,
+    )
+    try:
+        prefix = executor._prefix(record)
+        checkpoint_key = f"{prefix}/checkpoints/0005.pt"
+        checkpoint = b"complete checkpoint"
+        store.publish(checkpoint_key, checkpoint)
+        key = f"{prefix}/model.pt"
+        expected = b"intact model"
+        checksum = hashlib.sha256(expected).hexdigest()
+        metadata = {"sha256": checksum}
+        # Deliberately create an inaccurate HEAD response on an owned test key.
+        store.client.put_object(
+            Bucket=store.settings.bucket,
+            Key=key,
+            Body=b"wrong bytes!",
+            Metadata=metadata,
+        )
+        assert store.digest(key) == checksum
+        logs = RECOVERY_RESULT_PREFIX + json.dumps(
+            {
+                "submission_id": record.claim.submission_id,
+                "worker_pid": 123,
+                "completed_steps": 5,
+                "artifact_uri": store.uri(key),
+                "first_epoch": 1,
+                "restored_optimizer_step": 0,
+                "checksum": checksum,
+            }
+        )
+        rejected = await executor._from_logs(record, "SUCCEEDED", logs)
+        assert rejected.status == ExecutionStatus.UNKNOWN and rejected.result is None
+        store.client.put_object(
+            Bucket=store.settings.bucket, Key=key, Body=expected, Metadata=metadata
+        )
+        checkpoint_metadata = {"sha256": hashlib.sha256(checkpoint).hexdigest()}
+        store.client.put_object(
+            Bucket=store.settings.bucket,
+            Key=checkpoint_key,
+            Body=b"corrupt checkpoint!",
+            Metadata=checkpoint_metadata,
+        )
+        rejected = await executor._from_logs(record, "SUCCEEDED", logs)
+        assert rejected.status == ExecutionStatus.UNKNOWN and rejected.result is None
+        store.client.put_object(
+            Bucket=store.settings.bucket,
+            Key=checkpoint_key,
+            Body=checkpoint,
+            Metadata=checkpoint_metadata,
+        )
+        accepted = await executor._from_logs(record, "SUCCEEDED", logs)
+        assert (
+            accepted.status == ExecutionStatus.SUCCEEDED
+            and accepted.result.checksum == checksum
+        )
+    finally:
+        await executor.aclose()
+
+
+async def test_worker_loss_skips_checkpoints_with_invalid_metadata(object_store):
+    from kusanagi_nerv.domain.execution import CheckpointRef, FailureKind
+    from kusanagi_nerv.executors.ray_training import RayTrainingExecutor
+    from kusanagi_nerv.training.recovery_config import WORKER_LOST_EXIT
+
+    store, owned = object_store
+    record = dispatch_record()
+    job_id = str(record.claim.job.job_id)
+    owned.append(job_id)
+    inherited = store.publish(
+        f"jobs/{job_id}/attempts/previous/checkpoints/0002.pt", b"inherited checkpoint"
+    )
+    record.claim.resume_checkpoint = CheckpointRef(*inherited, 2)
+    executor = RayTrainingExecutor(
+        None,
+        RayJobsSettings("http://127.0.0.1:8265", "session_retry", "a" * 64),
+        store.settings,
+    )
+    try:
+        prefix = executor._prefix(record)
+        store.client.put_object(
+            Bucket=store.settings.bucket,
+            Key=f"{prefix}/checkpoints/0004.pt",
+            Body=b"checkpoint with no digest metadata",
+        )
+        failure = {"driver_exit_code": WORKER_LOST_EXIT}
+        fallback = await executor._failed(record, failure)
+        assert fallback.status == ExecutionStatus.FAILED
+        assert fallback.failure_kind == FailureKind.TRANSIENT
+        assert fallback.checkpoint is None
+        assert fallback.retry_checkpoint == record.claim.resume_checkpoint
+
+        earlier = store.publish(f"{prefix}/checkpoints/0003.pt", b"verified checkpoint")
+        recovered = await executor._failed(record, failure)
+        assert (
+            recovered.checkpoint
+            == recovered.retry_checkpoint
+            == CheckpointRef(*earlier, 3)
+        )
+    finally:
+        await executor.aclose()
+
+
+@pytest.mark.parametrize("budget", [2, 1, 0])
 async def test_real_worker_death_checkpoint_and_retry_budget(
     budget,
     postgres_url,
@@ -171,6 +383,7 @@ async def test_real_worker_death_checkpoint_and_retry_budget(
         kill_after_epoch=2,
     )
     controller = Controller(attempts, executor)
+    original_payload = executor._payload
     original_request = executor._request
     lost = False
 
@@ -188,6 +401,17 @@ async def test_real_worker_death_checkpoint_and_retry_budget(
         return response
 
     executor._request = lose_first_submit_reply
+
+    def interrupt_attempt_two(record):
+        payload = original_payload(record)
+        if budget == 2 and record.claim.job.attempt == 2:
+            env = payload["runtime_env"]["env_vars"]
+            inputs = json.loads(env[INPUT_ENV])
+            inputs["recovery"]["kill_after_epoch"] = 2
+            env[INPUT_ENV] = json.dumps(inputs)
+        return payload
+
+    executor._payload = interrupt_attempt_two
     try:
         with api_process(postgres_url) as (address, _):
             async with httpx2.AsyncClient(base_url=address, timeout=5) as api:
@@ -226,6 +450,7 @@ async def test_real_worker_death_checkpoint_and_retry_budget(
                 checkpoint = first["published_checkpoint"]
                 assert checkpoint["epoch"] == 2
                 assert first["resume_checkpoint"] is None
+                assert first["retry_checkpoint"] == checkpoint
                 assert read_checkpoint_in_fresh_process(checkpoint) == {
                     "epoch": 2,
                     "steps": [12],
@@ -246,21 +471,42 @@ async def test_real_worker_death_checkpoint_and_retry_budget(
                     return
 
                 assert (
-                    view["status"] == "succeeded" and view["attempt"] == len(rows) == 2
+                    view["status"] == "succeeded"
+                    and view["attempt"] == len(rows) == budget + 1
                 )
-                second = rows[1]
+                if budget == 2:
+                    second = rows[1]
+                    assert second["last_observation"] == "failed"
+                    assert second["failure_kind"] == "transient"
+                    assert (
+                        second["resume_checkpoint"]
+                        == second["retry_checkpoint"]
+                        == checkpoint
+                    )
+                    assert second["published_checkpoint"] is None
+                    failed_again = await executor.client.get(
+                        f"/api/jobs/{second['submission_id']}"
+                    )
+                    assert failed_again.json()["driver_exit_code"] == 75
+                    second_prefix = (
+                        f"jobs/{first['job_id']}/attempts/{second['submission_id']}"
+                    )
+                    assert (
+                        store.latest_checkpoint(second_prefix, SPEC["epochs"]) is None
+                    )
+                resumed = rows[-1]
                 assert (
-                    second["id"] != first["id"]
-                    and second["submission_id"] != first["submission_id"]
+                    len({row["id"] for row in rows}) == budget + 1
+                    and len({row["submission_id"] for row in rows}) == budget + 1
                 )
-                assert second["resume_checkpoint"] == checkpoint
-                assert second["published_checkpoint"]["epoch"] == SPEC["epochs"]
-                assert view["checkpoint_uri"] == second["published_checkpoint"]["uri"]
-                result = second["execution_result"]
+                assert resumed["resume_checkpoint"] == checkpoint
+                assert resumed["published_checkpoint"]["epoch"] == SPEC["epochs"]
+                assert view["checkpoint_uri"] == resumed["published_checkpoint"]["uri"]
+                result = resumed["execution_result"]
                 assert result["completed_steps"] == 5 and result["first_epoch"] == 3
                 assert result["restored_optimizer_step"] == 12
                 assert view["artifact_uri"] == result["artifact_uri"]
-                assert second["submission_id"] in view["artifact_uri"]
+                assert resumed["submission_id"] in view["artifact_uri"]
                 model_bytes = store.read(view["artifact_uri"], result["checksum"])
                 payload = torch.load(
                     io.BytesIO(model_bytes), weights_only=True, map_location="cpu"
