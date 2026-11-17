@@ -1,5 +1,12 @@
 # Documentation change log
 
+## 2026-11-17 — v0.13 MLP-009 Ray Train CPU DDP
+
+- Reused the tiny regressor, synthetic split and artifact format in a two-worker Ray Train v2 job with real PyTorch DDP and Gloo.
+- Added attempt-scoped worker start and success events, ranked worker evidence and explicit zero Ray Train retry budgets.
+- Added Linux CI for repeatable CPU DDP and GPU placement without capacity. Actual GPU training remains DESIGN-ONLY.
+- MLP-009 is In review. PR #11 merged MLP-008 into main. The DDP/FSDP learning checkpoint remains pending.
+
 ## 2026-11-17 — v0.12 MLP-008 reproducible CPU training
 
 - Added the optional CPU PyTorch trainer, versioned synthetic data split, seeded minibatches and held-out MSE/MAE.

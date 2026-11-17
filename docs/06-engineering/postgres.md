@@ -32,13 +32,13 @@ docker compose stop postgres
 ```bash
 uv run --locked ruff check src tests migrations
 uv run --locked ruff format --check src tests migrations
-uv run --locked pytest -q -m 'not integration and not ray and not ray_jobs and not training'
+uv run --locked pytest -q -m 'not integration and not ray and not ray_jobs and not training and not ray_train'
 export KUSANAGI_TEST_DATABASE_URL='postgresql+asyncpg://kusanagi:local-development-only@127.0.0.1:55432/postgres'
 uv run --locked pytest -q tests/integration -m 'not ray_jobs'
 uv build
 ```
 
-With the test URL exported, `uv run --locked --extra ray-jobs --extra training pytest -q` runs the full suite, including real Ray clusters and PyTorch training. Without it, PostgreSQL integration cases are explicitly skipped, not counted as database evidence. CI runs fast checks and a separate PostgreSQL service job on pull requests, including dependent PRs.
+With the test URL exported, `uv run --locked --extra ray-jobs --extra ray-train pytest -q` runs the full suite, including real Ray clusters and PyTorch training. Without it, PostgreSQL integration cases are explicitly skipped, not counted as database evidence. CI runs fast checks and a separate PostgreSQL service job on pull requests, including dependent PRs.
 
 The test role needs `CREATEDB`. Each integration case creates a randomly named `kusanagi_test_<uuid>` database, applies Alembic, then drops only that owned database. The database named in the supplied test URL is used for administration and is never reset. Tests include a real Uvicorn process killed after a successful response, followed by a fresh API process reading the persisted record.
 

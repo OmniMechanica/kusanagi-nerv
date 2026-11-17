@@ -8,6 +8,7 @@
 - [Isolated Ray Core tasks, actor state and backpressure](ray-core.md)
 - [Ray Jobs adapter, restart recovery and cancellation](ray-jobs.md)
 - [Reproducible CPU PyTorch training and model artifacts](cpu-training.md)
+- [Ray Train CPU DDP and the attempt result contract](ray-train.md)
 - [Testing strategy and non-flaky integration tests](testing-strategy.md)
 - [Definition of Done](definition-of-done.md)
 - [Risk register and mitigations](risk-register.md)
