@@ -41,8 +41,9 @@ See [CPU training](cpu-training.md).
 
 MLP-009 adds the `ray_train` marker and a CI job that starts a real Ray Train
 runtime. It checks repeated two-rank CPU DDP, agreement with a serial equivalent
-batch, artifact reload, and the absence of start/result events on a GPU placement
-timeout. See [Ray Train](ray-train.md).
+batch for predictions and train MSE, artifact reload, and the absence of
+start/result events on a confirmed GPU placement timeout. A subprocess test
+checks startup cleanup when `SIGTERM` arrives before Ray imports. See [Ray Train](ray-train.md).
 
 ## Non-flaky testing principles
 

@@ -91,10 +91,13 @@ uv run --locked --extra ray-train pytest -q tests/ray_train
 
 The CPU case repeats the distributed run in separate processes and compares
 rank identities, parameter digests, metrics and predictions. It also compares
-predictions to serial training with the equivalent batch size of 64, allowing
-floating-point rounding differences. The pending case starts a real Ray Train
-driver, requests GPU placement on a cluster with zero GPUs and waits for placement
-failure. It checks the absence of the start event, success result and artifact.
+predictions and aggregate training MSE to serial training with the equivalent
+batch size of 64, allowing floating-point rounding differences. The pending
+case starts a real Ray Train driver, requests GPU placement on a cluster with
+zero GPUs and checks for the specific worker placement timeout. It also checks
+the absence of the start event, success result and artifact. The startup cleanup
+case delivers `SIGTERM` to the CLI after it creates the token and before it
+imports Ray, then checks that the temporary directory was removed.
 
 The observed default CPU run completed 20 epochs with Gloo. Driver PID was
 3946, and worker PIDs were 4035 and 4034. Evaluation MSE went from `7.496293`

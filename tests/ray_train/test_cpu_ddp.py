@@ -4,9 +4,11 @@ import hashlib
 import importlib.util
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 
@@ -130,7 +132,10 @@ def test_two_real_workers_produce_repeatable_weights_and_metrics(
     # One serial step over the union of the two shards is the same update
     # as one DDP step, up to floating-point reduction order.
     reference = tmp_path / "serial-reference.pt"
-    train(TrainingConfig(batch_size=64), reference)
+    serial = train(TrainingConfig(batch_size=64), reference)
+    assert reports[0]["training"]["final_train_mse"] == pytest.approx(
+        serial.final_train_mse, rel=1e-5, abs=1e-7
+    )
     with torch.inference_mode():
         serial_prediction = load_model(reference)(eval_x)
     torch.testing.assert_close(predictions[0], serial_prediction, rtol=1e-4, atol=1e-5)
@@ -144,6 +149,65 @@ def test_gpu_placement_without_gpus_does_not_emit_training_start(
     logs = process.stdout + process.stderr
     assert process.returncode == 1, logs
     assert "Attempting to start training worker group" in logs and "'GPU': 1" in logs
+    assert (
+        "The worker group startup timed out after 15.0 seconds waiting for 2 workers"
+        in logs
+    )
     assert "Ray Train failed" in logs
     assert START_PREFIX not in logs and RESULT_PREFIX not in logs
+    assert not output.exists()
+
+
+def test_sigterm_before_ray_import_removes_runtime_directory(tmp_path: Path) -> None:
+    # Deliver a real SIGTERM in the child after its token exists and before Ray
+    # can install its own signal handler. Keep all probe files under this test.
+    script = """
+import os
+import signal
+import sys
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
+
+from kusanagi_nerv.training import ray_train
+
+directory = Path(sys.argv.pop(1))
+ray_train.tempfile = SimpleNamespace(TemporaryDirectory=lambda *, prefix, dir:
+    tempfile.TemporaryDirectory(prefix=prefix, dir=directory))
+original_environment = ray_train.runtime_environment
+
+@contextmanager
+def interrupt_startup(path):
+    with original_environment(path):
+        assert (Path(path) / 'auth_token').is_file()
+        print('SIGTERM during startup', flush=True)
+        os.kill(os.getpid(), signal.SIGTERM)
+        yield
+
+ray_train.runtime_environment = interrupt_startup
+raise SystemExit(ray_train.main())
+"""
+    output = tmp_path / "interrupted.pt"
+    with TemporaryDirectory(dir=tmp_path) as directory:
+        process = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                script,
+                directory,
+                "--submission-id",
+                "interrupted",
+                "--output",
+                str(output),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        assert process.stdout == "SIGTERM during startup\n", process.stderr
+        assert not list(Path(directory).iterdir())
+    assert process.returncode == 128 + signal.SIGTERM, process.stderr
     assert not output.exists()

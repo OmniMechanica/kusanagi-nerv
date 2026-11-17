@@ -2,15 +2,21 @@
 
 import argparse
 import json
+import signal
 import sys
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
+from types import FrameType
 
 from kusanagi_nerv.runtime.environment import runtime_environment
 
 from .config import TrainingConfig
 from .distributed_config import RESULT_PREFIX, DistributedConfig, DistributedResult
+
+
+def _exit_on_sigterm(signum: int, _frame: FrameType | None) -> None:
+    raise SystemExit(128 + signum)
 
 
 def run_local(config: DistributedConfig, output: Path) -> DistributedResult:
@@ -63,6 +69,9 @@ def main() -> int:
         )
     except ValueError as exc:
         parser.error(str(exc))
+    # Ray installs its own handler during init. Cover the imports and temporary
+    # files created before that point so SIGTERM unwinds the launcher contexts.
+    previous_sigterm = signal.signal(signal.SIGTERM, _exit_on_sigterm)
     try:
         result = run_local(config, args.output)
     except ImportError as exc:
@@ -74,6 +83,8 @@ def main() -> int:
     except Exception as exc:
         print(f"Ray Train failed ({type(exc).__name__}): {exc}", file=sys.stderr)
         return 1
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
     report = asdict(result)
     report["training"]["artifact_path"] = str(result.training.artifact_path)
     print(

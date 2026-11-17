@@ -188,8 +188,8 @@ rank PIDs, metrics and the loadable weights path. See the [Ray Train guide](docs
 - [MLP-009](docs/03-planning/tasks/MLP-009.md): multi-worker CPU DDP, ranked worker
   evidence and an attempt-scoped start/result contract. In review.
 
-The full suite has 333 tests across six suites: 252 fast, 65 PostgreSQL, 5 Ray
-Core, 5 Ray Jobs/PostgreSQL, 4 PyTorch CPU and 2 Ray Train cases. Each integration
+The full suite has 334 tests across six suites: 252 fast, 65 PostgreSQL, 5 Ray
+Core, 5 Ray Jobs/PostgreSQL, 4 PyTorch CPU and 3 Ray Train cases. Each integration
 suite requires its documented environment.
 See the [progress journal](docs/03-planning/progress.md)
 for local verification, hosted checks and scope. Static analysis with mypy/Pyright
