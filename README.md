@@ -196,10 +196,24 @@ exact saved model, Adam state and minibatch generator. See the [recovery runbook
   evidence and an attempt-scoped start/result contract. PR #12 merged.
 - [MLP-010](docs/03-planning/tasks/MLP-010.md): controller-owned retry after a real
   worker failure, explicit S3 checkpoint restore and final artifact publication.
-  In review.
+  PR #13 merged.
+- [MLP-011](docs/03-planning/tasks/MLP-011.md), in local review: verified training
+  success registers one immutable model. The public API deploys the model, reads
+  its readiness and returns versioned predictions from Ray Serve.
+  See the [deployment guide](docs/06-engineering/model-deployment.md).
+- [MLP-013](docs/03-planning/tasks/MLP-013.md): automated CPU training, checkpoint
+  recovery and prediction through the public API. Run both cases with the
+  [CPU pipeline script and runbook](docs/06-engineering/cpu-pipeline.md).
+- [MLP-015](docs/03-planning/tasks/MLP-015.md) adds a
+  [KubeRay smoke test](docs/06-engineering/kuberay-kind.md) for a CPU batch job
+  and versioned HTTP predictions on a disposable kind cluster.
+- [MLP-016](docs/03-planning/tasks/MLP-016.md) adds the
+  [GPU placement design](docs/02-architecture/gpu-kubernetes.md) and a
+  GPU RayJob manifest with Kubernetes validation on CPU kind.
 
-The full suite has 346 tests across seven suites: 252 fast, 66 PostgreSQL, 5 Ray
-Core, 5 Ray Jobs/PostgreSQL, 4 PyTorch CPU, 3 Ray Train and 11 S3 recovery cases.
+The full suite has 353 tests: 252 fast, 70 PostgreSQL, 5 Ray Core,
+5 Ray Jobs/PostgreSQL, 4 PyTorch CPU, 3 Ray Train, 11 S3 recovery, 1 Ray Serve
+and 2 full CPU pipeline cases.
 Each integration suite requires its documented environment.
 See the [progress journal](docs/03-planning/progress.md)
 for local verification, hosted checks and scope. Static analysis with mypy/Pyright
