@@ -52,8 +52,9 @@ one and two. The two-retry case loses a second worker after restore and checks
 that the third attempt still resumes from the original checkpoint. Separate cases
 exercise Ray cancellation during an S3 outage and reject object data with a
 matching SHA-256 metadata value but a different computed hash. See [checkpoint recovery](checkpoint-recovery.md).
-Regressions also cover interrupted object reads, deleted inherited checkpoints,
-and the public checkpoint URI after recovery falls back to an earlier epoch.
+Regressions also cover short S3 response bodies, checkpoint searches that span
+multiple controller polls, deleted inherited checkpoints, and the public
+checkpoint URI after recovery falls back to an earlier epoch.
 
 ## Non-flaky testing principles
 

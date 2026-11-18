@@ -5,6 +5,7 @@ import os
 import re
 from contextlib import closing
 from dataclasses import dataclass, field
+from threading import Event
 from typing import Self
 from urllib.parse import urlsplit
 
@@ -143,7 +144,14 @@ class ObjectStore:
             # StreamingBody.__enter__ returns the raw transport stream. Read
             # through the wrapper so botocore translates body read errors.
             with closing(response["Body"]) as stream:
-                data = stream.read(MAX_BYTES + 1)
+                data = bytearray()
+                while len(data) <= MAX_BYTES:
+                    # A nonempty short read does not make StreamingBody check
+                    # Content-Length. Read through EOF within the size limit.
+                    chunk = stream.read(MAX_BYTES + 1 - len(data))
+                    if not chunk:
+                        break
+                    data.extend(chunk)
         except ClientError as exc:
             if (
                 exc.response["Error"]["Code"] == "NoSuchKey"
@@ -158,7 +166,7 @@ class ObjectStore:
             or hashlib.sha256(data).hexdigest() != expected_sha256
         ):
             raise ObjectIntegrityError("S3 object integrity verification failed")
-        return data
+        return bytes(data)
 
     def digest(self, key: str) -> str:
         try:
@@ -174,9 +182,14 @@ class ObjectStore:
         return sha
 
     def latest_checkpoint(
-        self, prefix: str, epochs: int, *, after_epoch: int = 0
+        self,
+        prefix: str,
+        epochs: int,
+        *,
+        after_epoch: int = 0,
+        stop: Event | None = None,
     ) -> CheckpointRef | None:
-        if epochs <= after_epoch:
+        if epochs <= after_epoch or (stop is not None and stop.is_set()):
             return None
         root = f"{prefix}/checkpoints/"
         try:
@@ -195,10 +208,14 @@ class ObjectStore:
             if match and after_epoch < int(match[1]) <= epochs:
                 available.append(int(match[1]))
         for epoch in sorted(available, reverse=True):
+            if stop is not None and stop.is_set():
+                return None
             key = checkpoint_key(prefix, epoch)
             uri = self.uri(key)
             try:
                 checksum = self.digest(key)
+                if stop is not None and stop.is_set():
+                    return None
                 self.read(uri, checksum)
             except (ObjectIntegrityError, ObjectNotFound):
                 continue

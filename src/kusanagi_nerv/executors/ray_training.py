@@ -5,7 +5,10 @@ import json
 import re
 import shlex
 import sys
-from dataclasses import asdict
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from functools import partial
+from threading import Event
 
 from kusanagi_nerv.domain.execution import (
     CheckpointRef,
@@ -51,6 +54,14 @@ def events(logs: str, prefix: str, submission_id: str) -> list[dict]:
     return found
 
 
+@dataclass(slots=True)
+class _TerminalCheck:
+    submission_id: str
+    status: ExecutionStatus
+    stop: Event
+    result: asyncio.Future[ExecutionObservation]
+
+
 class RayTrainingExecutor(RayJobsExecutor):
     kind = "ray-training-v1"
 
@@ -74,10 +85,64 @@ class RayTrainingExecutor(RayJobsExecutor):
         self.entrypoint = shlex.join(
             [sys.executable, "-m", "kusanagi_nerv.workloads.recovery"]
         )
+        self._check: _TerminalCheck | None = None
+        self._checks: set[asyncio.Future[ExecutionObservation]] = set()
 
     async def aclose(self) -> None:
+        self._discard_check()
+        await asyncio.gather(*self._checks, return_exceptions=True)
         await super().aclose()
         self.objects.client.close()
+
+    def _discard_check(self) -> None:
+        if self._check is not None:
+            self._check.stop.set()
+            self._check = None
+
+    def _check_finished(self, result: asyncio.Future[ExecutionObservation]) -> None:
+        self._checks.discard(result)
+        if not result.cancelled():
+            # A check can finish after cancellation, loss of the claim or shutdown.
+            result.exception()
+
+    async def _check_terminal(
+        self,
+        submission_id: str,
+        status: ExecutionStatus,
+        verify: Callable[[Event], ExecutionObservation],
+    ) -> ExecutionObservation:
+        check = self._check
+        if check is None or (check.submission_id, check.status) != (
+            submission_id,
+            status,
+        ):
+            self._discard_check()
+            stop = Event()
+            result = asyncio.get_running_loop().run_in_executor(None, verify, stop)
+            check = self._check = _TerminalCheck(submission_id, status, stop, result)
+            self._checks.add(result)
+            result.add_done_callback(self._check_finished)
+
+        # A timed-out poll cancels this wait while the read-only check continues.
+        await asyncio.wait((check.result,))
+        if self._check is not check:
+            return UNKNOWN
+        self._check = None
+        return check.result.result()
+
+    async def lookup(self, submission_id: str) -> ExecutionObservation:
+        if self._check is not None and self._check.submission_id != submission_id:
+            self._discard_check()
+        return await super().lookup(submission_id)
+
+    async def cancel(self, submission_id: str) -> ExecutionObservation:
+        check = self._check
+        if check is not None and (
+            check.submission_id != submission_id
+            or check.status == ExecutionStatus.FAILED
+        ):
+            self._discard_check()
+        return await super().cancel(submission_id)
 
     async def submit(self, claim: Claim) -> ExecutionObservation:
         spec = claim.job.spec
@@ -133,19 +198,31 @@ class RayTrainingExecutor(RayJobsExecutor):
 
     async def _failed(self, record: DispatchRecord, data: dict) -> ExecutionObservation:
         if data.get("driver_exit_code") != WORKER_LOST_EXIT:
+            self._discard_check()
             return ExecutionObservation(ExecutionStatus.FAILED)
+        return await self._check_terminal(
+            record.claim.submission_id,
+            ExecutionStatus.FAILED,
+            partial(self._find_retry_checkpoint, record),
+        )
+
+    def _find_retry_checkpoint(
+        self, record: DispatchRecord, stop: Event
+    ) -> ExecutionObservation:
         inherited = record.claim.resume_checkpoint
-        checkpoint = await asyncio.to_thread(
-            self.objects.latest_checkpoint,
+        checkpoint = self.objects.latest_checkpoint(
             self._prefix(record),
             record.claim.job.spec.epochs - 1,
             after_epoch=inherited.epoch if inherited else 0,
+            stop=stop,
         )
+        if stop.is_set():
+            return UNKNOWN
         retry = checkpoint
         if (
             retry is None
             and inherited
-            and await self._verified(inherited.uri, inherited.sha256)
+            and self._verified(inherited.uri, inherited.sha256)
         ):
             retry = inherited
         return ExecutionObservation(
@@ -156,9 +233,9 @@ class RayTrainingExecutor(RayJobsExecutor):
             checkpoint_reconciled=True,
         )
 
-    async def _verified(self, uri: str, checksum: str) -> bool:
+    def _verified(self, uri: str, checksum: str) -> bool:
         try:
-            await asyncio.to_thread(self.objects.read, uri, checksum)
+            self.objects.read(uri, checksum)
         except (ObjectIntegrityError, ObjectNotFound):
             return False
         return True
@@ -225,27 +302,36 @@ class RayTrainingExecutor(RayJobsExecutor):
             or not re.fullmatch(r"[0-9a-f]{64}", event["checksum"])
         ):
             return UNKNOWN
-        digest = event["checksum"]
-        if not await self._verified(event["artifact_uri"], digest):
+        result = TrainingExecutionResult(
+            event["worker_pid"],
+            event["completed_steps"],
+            event["checksum"],
+            event["artifact_uri"],
+            first_epoch,
+            expected_step,
+        )
+        return await self._check_terminal(
+            submission_id,
+            ExecutionStatus.SUCCEEDED,
+            partial(self._verify_success, record, result),
+        )
+
+    def _verify_success(
+        self, record: DispatchRecord, result: TrainingExecutionResult, stop: Event
+    ) -> ExecutionObservation:
+        if stop.is_set() or not self._verified(result.artifact_uri, result.checksum):
             return UNKNOWN
         final_epoch = record.claim.job.spec.epochs
-        checkpoint = await asyncio.to_thread(
-            self.objects.latest_checkpoint,
+        checkpoint = self.objects.latest_checkpoint(
             self._prefix(record),
             final_epoch,
             after_epoch=final_epoch - 1,
+            stop=stop,
         )
         if checkpoint is None:
             return UNKNOWN
         return ExecutionObservation(
             ExecutionStatus.SUCCEEDED,
-            result=TrainingExecutionResult(
-                event["worker_pid"],
-                event["completed_steps"],
-                digest,
-                event["artifact_uri"],
-                first_epoch,
-                expected_step,
-            ),
+            result=result,
             checkpoint=checkpoint,
         )

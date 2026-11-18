@@ -80,8 +80,10 @@ reservation. Storage scope is local loopback on a single host.
    reference in `retry_checkpoint`. A failed attempt that published no usable
    checkpoint can select its verified `resume_checkpoint` again. A retry requires
    available budget. An explicit S3 `NoSuchKey` response makes that candidate
-   unusable. An interrupted download, ambiguous response or access error keeps
-   the same submission identity and consumes no additional attempt.
+   unusable. A short response body is an interrupted download. An interrupted
+   download, ambiguous response or access error keeps the same submission
+   identity and consumes no additional attempt. When a storage check outlasts a
+   controller poll, the next poll for that submission reuses its progress.
 3. The transaction that creates the successor copies the selected URI, SHA-256
    and epoch into `resume_checkpoint`. The adapter passes that exact reference to
    the new driver. Each rank reads and verifies the object before loading it with
@@ -91,8 +93,8 @@ reservation. Storage scope is local loopback on a single host.
 4. Rank zero publishes new checkpoints under the successor's prefix. After
    `fit()` succeeds, the driver publishes final inference weights to that
    attempt's `model.pt` S3 key. The adapter downloads both the artifact and final
-   checkpoint with the object size limit and verifies their SHA-256 before
-   committing job success. `GET` exposes
+   checkpoint with the object size limit, checks that each download is complete
+   and verifies SHA-256 before committing job success. `GET` exposes
    `checkpoint_uri` and `artifact_uri`; the attempt records retain the selected
    checkpoint, the checkpoint each attempt published, starting epoch and restored
    Adam step.
@@ -139,8 +141,10 @@ metadata cannot establish success for corrupted bytes and that an invalid digest
 on the latest checkpoint leaves earlier valid checkpoints eligible for retry.
 PostgreSQL and S3 cases verify that `GET` returns an earlier valid URI after a
 corrupt publication and clears the URI if the inherited key was deleted.
-Stubs cover interrupted S3 downloads and Ray `stop` during an S3 outage. The tests
-use disposable databases and delete only their own job prefixes.
+Stubs cover interrupted downloads with an explicit exception or a short body,
+reuse of a slow checkpoint search across poll timeouts, and Ray `stop` while an
+older search is still in progress. The tests use disposable databases and delete
+only their own job prefixes.
 
 To inspect the ledger for a job, substitute its UUID below.
 

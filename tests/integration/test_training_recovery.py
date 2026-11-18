@@ -11,6 +11,7 @@ import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -20,7 +21,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from kusanagi_nerv.api.app import create_app
-from kusanagi_nerv.controller.service import Controller
+from kusanagi_nerv.controller.service import Controller, ControllerSettings
 from kusanagi_nerv.db.models import AttemptRow, JobRow
 from kusanagi_nerv.domain.execution import (
     CheckpointRef,
@@ -186,9 +187,13 @@ async def test_interrupted_s3_download_preserves_uncertain_outcome(monkeypatch):
         ObjectStoreSettings("http://127.0.0.1:58333", "test-bucket", "fake", "fake"),
     )
     record = dispatch_record()
-    checkpoint = CheckpointRef(executor.objects.uri("previous.pt"), "b" * 64, 2)
+    complete = b"complete checkpoint"
+    checkpoint = CheckpointRef(
+        executor.objects.uri("previous.pt"), hashlib.sha256(complete).hexdigest(), 2
+    )
     record.claim.resume_checkpoint = checkpoint
     raw = InterruptedStream()
+    short = io.BytesIO(complete[:3])
     monkeypatch.setattr(
         executor.objects.client,
         "list_objects_v2",
@@ -197,6 +202,13 @@ async def test_interrupted_s3_download_preserves_uncertain_outcome(monkeypatch):
     try:
         with Stubber(executor.objects.client) as s3:
             s3.add_response("get_object", {"Body": StreamingBody(raw, 128)})
+            s3.add_response(
+                "get_object",
+                {
+                    "Body": StreamingBody(short, len(complete)),
+                    "ContentLength": len(complete),
+                },
+            )
             for code, status in [
                 ("NoSuchBucket", 404),
                 ("404", 404),
@@ -205,8 +217,15 @@ async def test_interrupted_s3_download_preserves_uncertain_outcome(monkeypatch):
                 s3.add_client_error(
                     "get_object", service_error_code=code, http_status_code=status
                 )
+            s3.add_response(
+                "get_object",
+                {
+                    "Body": StreamingBody(io.BytesIO(complete), len(complete)),
+                    "ContentLength": len(complete),
+                },
+            )
             controller = Controller(None, executor)
-            for _ in range(4):
+            for _ in range(5):
                 observation = await controller._call(
                     lambda: executor._failed(
                         record, {"driver_exit_code": WORKER_LOST_EXIT}
@@ -214,9 +233,61 @@ async def test_interrupted_s3_download_preserves_uncertain_outcome(monkeypatch):
                 )
                 assert observation.status == ExecutionStatus.UNKNOWN
                 assert not observation.checkpoint_reconciled
+            recovered = await controller._call(
+                lambda: executor._failed(record, {"driver_exit_code": WORKER_LOST_EXIT})
+            )
+            assert recovered.status == ExecutionStatus.FAILED
+            assert recovered.failure_kind == FailureKind.TRANSIENT
+            assert recovered.retry_checkpoint == checkpoint
             s3.assert_no_pending_responses()
-        assert raw.closed
+        assert raw.closed and short.closed
     finally:
+        await executor.aclose()
+
+
+async def test_slow_checkpoint_search_is_reused_across_polls(monkeypatch):
+    pytest.importorskip("boto3")
+    from kusanagi_nerv.executors.ray_training import RayTrainingExecutor
+    from kusanagi_nerv.training.object_store import ObjectStoreSettings
+
+    executor = RayTrainingExecutor(
+        None,
+        RayJobsSettings("http://127.0.0.1:8265", "session_slow", "a" * 64),
+        ObjectStoreSettings("http://127.0.0.1:58333", "test-bucket", "fake", "fake"),
+    )
+    record = dispatch_record()
+    checkpoint = CheckpointRef(executor.objects.uri("candidate.pt"), "b" * 64, 1)
+    release = Event()
+    calls = []
+
+    def search(*args, **kwargs):
+        calls.append(args)
+        assert release.wait(5)
+        return checkpoint
+
+    monkeypatch.setattr(executor.objects, "latest_checkpoint", search)
+    controller = Controller(
+        None, executor, settings=ControllerSettings(executor_timeout_seconds=0.05)
+    )
+
+    async def poll():
+        return await controller._call(
+            lambda: executor._failed(record, {"driver_exit_code": WORKER_LOST_EXIT})
+        )
+
+    try:
+        for _ in range(2):
+            assert (await poll()).status == ExecutionStatus.UNKNOWN
+        release.set()
+        async with asyncio.timeout(3):
+            while (observation := await poll()).status == ExecutionStatus.UNKNOWN:
+                await asyncio.sleep(0)
+        assert len(calls) == 1
+        assert observation.status == ExecutionStatus.FAILED
+        assert observation.failure_kind == FailureKind.TRANSIENT
+        assert observation.retry_checkpoint == checkpoint
+    finally:
+        release.set()
         await executor.aclose()
 
 
@@ -291,15 +362,38 @@ async def test_cancel_sends_ray_stop_without_consulting_s3(monkeypatch):
     def outage(_):
         raise StorageUnavailable("Injected controller-side S3 outage")
 
+    release = Event()
+    stopped = Event()
+
+    def slow_scan(*_, stop, **__):
+        assert release.wait(5)
+        assert stop.is_set()
+        stopped.set()
+        return None
+
     monkeypatch.setattr(executor.objects, "digest", outage)
+    monkeypatch.setattr(executor.objects, "latest_checkpoint", slow_scan)
     try:
+        # Retire a slow verification when this controller moves on to an
+        # active submission with a cancellation request.
+        lost = dispatch_record()
+        controller = Controller(
+            None, executor, settings=ControllerSettings(executor_timeout_seconds=0.05)
+        )
+        observed = await controller._call(
+            lambda: executor._failed(lost, {"driver_exit_code": WORKER_LOST_EXIT})
+        )
+        assert observed.status == ExecutionStatus.UNKNOWN
         pending = await executor.cancel(record.claim.submission_id)
         assert stops == ["POST"] and pending.status == ExecutionStatus.PENDING
+        assert not release.is_set()
         status = "STOPPED"
         confirmed = await executor.cancel(record.claim.submission_id)
         assert confirmed.status == ExecutionStatus.CANCELLED and stops == ["POST"]
     finally:
+        release.set()
         await executor.aclose()
+    assert stopped.is_set()
 
 
 async def test_success_requires_matching_artifact_bytes(object_store):
