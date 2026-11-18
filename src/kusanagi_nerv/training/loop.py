@@ -190,7 +190,7 @@ def publish_artifact(output: Path, write: Callable[[BinaryIO], object]) -> str:
     return sha256
 
 
-def load_model(path: Path) -> nn.Module:
+def load_model(path: Path | BinaryIO) -> nn.Module:
     """Restore the weights for CPU inference from a trusted local artifact."""
     artifact = torch.load(path, map_location="cpu", weights_only=True)
     if (

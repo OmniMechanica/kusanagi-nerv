@@ -169,7 +169,7 @@ async def test_downgrade_does_not_remove_ray_dispatch_fences(dispatch, migrate, 
     async with engine.connect() as connection:
         assert (
             await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0006_retry_checkpoint"
+            == "0009_job_model_result"
         )
 
 

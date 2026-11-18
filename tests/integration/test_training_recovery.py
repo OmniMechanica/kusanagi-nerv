@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from kusanagi_nerv.api.app import create_app
 from kusanagi_nerv.controller.service import Controller, ControllerSettings
-from kusanagi_nerv.db.models import AttemptRow, JobRow
+from kusanagi_nerv.db.models import AttemptRow, JobRow, ModelRow
 from kusanagi_nerv.domain.execution import (
     CheckpointRef,
     ExecutionStatus,
@@ -46,10 +46,8 @@ SPEC = {
 
 @pytest.fixture
 def object_store():
-    if any(
-        importlib.util.find_spec(name) is None for name in ("torch", "pyarrow", "boto3")
-    ):
-        pytest.skip("Install the recovery extra")
+    if importlib.util.find_spec("boto3") is None:
+        pytest.skip("Install the recovery or serving extra for S3")
     if not os.environ.get("KUSANAGI_S3_ENDPOINT"):
         pytest.skip("Start local S3 storage and set KUSANAGI_S3_* variables")
     from botocore.exceptions import (
@@ -622,7 +620,8 @@ async def test_real_worker_death_checkpoint_and_retry_budget(
     ray_info_file,
     tmp_path,
 ):
-    import torch
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("pyarrow")
 
     from kusanagi_nerv.executors.ray_training import RayTrainingExecutor
     from kusanagi_nerv.training.config import TrainingConfig
@@ -725,6 +724,12 @@ async def test_real_worker_death_checkpoint_and_retry_budget(
                         view["checkpoint_uri"] == checkpoint["uri"]
                         and view["artifact_uri"] is None
                     )
+                    assert view["result_model_id"] is None
+                    assert view["result_model_version"] is None
+                    async with engine.connect() as connection:
+                        assert (
+                            await connection.scalar(select(ModelRow.model_id)) is None
+                        )
                     await controller.tick()
                     assert len(await attempt_rows(engine)) == 1
                     return
@@ -766,6 +771,21 @@ async def test_real_worker_death_checkpoint_and_retry_budget(
                 assert result["restored_optimizer_step"] == 12
                 assert view["artifact_uri"] == result["artifact_uri"]
                 assert resumed["submission_id"] in view["artifact_uri"]
+                async with engine.connect() as connection:
+                    model = (
+                        (await connection.execute(select(ModelRow.__table__)))
+                        .mappings()
+                        .one()
+                    )
+                assert view["result_model_id"] == str(model["id"])
+                assert view["result_model_version"] == model["version"] == "v1"
+                assert model["source_job_id"] == resumed["job_id"]
+                assert model["artifact_uri"] == result["artifact_uri"]
+                assert model["artifact_sha256"] == result["checksum"]
+                await controller.tick()
+                assert (await api.get(location)).json()["result_model_id"] == view[
+                    "result_model_id"
+                ]
                 model_bytes = store.read(view["artifact_uri"], result["checksum"])
                 payload = torch.load(
                     io.BytesIO(model_bytes), weights_only=True, map_location="cpu"

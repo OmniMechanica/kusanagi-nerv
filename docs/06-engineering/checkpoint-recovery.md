@@ -13,10 +13,11 @@ local MinIO endpoint can be supplied with the same settings. The current client
 expects a pre-created bucket and explicit local credentials. The values below
 are public development defaults.
 
-When upgrading an existing ledger from `0005_training_checkpoints`, stop every
-controller connected to it before running `alembic upgrade head`. Start the
-updated controllers after the migration completes. This lets `0006` backfill
-all pending training retries before any controller writes another failure.
+When upgrading an existing ledger from `0005_training_checkpoints` or
+`0006_retry_checkpoint`, stop every controller connected to it before running
+`alembic upgrade head`. Start the updated controllers after the migration
+completes. The migrations backfill pending retries and successful training
+results from the ledger.
 
 ```bash
 uv sync --locked --extra recovery

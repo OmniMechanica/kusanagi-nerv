@@ -8,6 +8,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     String,
     Text,
@@ -38,6 +39,20 @@ class JobRow(Base):
             "jsonb_typeof(spec_json) = 'object'", name="ck_jobs_spec_object"
         ),
         CheckConstraint("payload_hash ~ '^[0-9a-f]{64}$'", name="ck_jobs_payload_hash"),
+        CheckConstraint(
+            "(result_model_id IS NULL AND result_model_version IS NULL) OR "
+            "(status = 'succeeded' AND result_model_id IS NOT NULL "
+            "AND result_model_version IS NOT NULL)",
+            name="ck_jobs_model_result",
+        ),
+        ForeignKeyConstraint(
+            ["result_model_id", "id", "tenant_id", "result_model_version"],
+            ["models.id", "models.source_job_id", "models.tenant_id", "models.version"],
+            deferrable=True,
+            initially="DEFERRED",
+            name="fk_jobs_model_result",
+            use_alter=True,
+        ),
         UniqueConstraint("tenant_id", "idempotency_key", name="uq_jobs_tenant_key"),
         Index("ix_jobs_status_created_at", "status", "created_at"),
         Index("ix_jobs_tenant_created_at_id", "tenant_id", "created_at", "id"),
@@ -73,6 +88,39 @@ class JobRow(Base):
         DateTime(timezone=True)
     )
     retry_not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ModelRow(Base):
+    """Immutable inference artifact registered by a successful training job."""
+
+    __tablename__ = "models"
+    __table_args__ = (
+        UniqueConstraint("source_job_id", name="uq_models_source_job"),
+        UniqueConstraint(
+            "id", "source_job_id", "tenant_id", "version", name="uq_models_result_link"
+        ),
+        CheckConstraint(
+            "artifact_sha256 ~ '^[0-9a-f]{64}$'", name="ck_models_artifact_sha256"
+        ),
+        CheckConstraint(
+            "(deploy_state = 'not_deployed' AND deploy_revision = 0) OR "
+            "(deploy_state IN ('deploying', 'ready', 'failed') AND deploy_revision > 0)",
+            name="ck_models_deploy_state",
+        ),
+    )
+
+    model_id: Mapped[UUID] = mapped_column("id", primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    source_job_id: Mapped[UUID] = mapped_column(ForeignKey("jobs.id"))
+    version: Mapped[str] = mapped_column(String(128))
+    artifact_uri: Mapped[str] = mapped_column(Text)
+    artifact_sha256: Mapped[str] = mapped_column(String(64))
+    deploy_state: Mapped[str] = mapped_column(String(16), server_default="not_deployed")
+    deploy_revision: Mapped[int] = mapped_column(server_default=text("0"))
+    deploy_error: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class AttemptRow(Base):

@@ -1,9 +1,10 @@
 """Admit and inspect durable jobs without running training in HTTP handlers."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, Request, Response
@@ -17,22 +18,59 @@ from kusanagi_nerv.api.schemas import (
     JobAccepted,
     JobSpec,
     JobView,
+    ModelView,
+    PredictionView,
     ValidationIssue,
 )
 from kusanagi_nerv.db.connection import create_database_engine
 from kusanagi_nerv.db.connection import database_url as resolve_database_url
+from kusanagi_nerv.domain.execution import ExecutorUnavailable
 from kusanagi_nerv.domain.job_lifecycle import JobStatus, transition
 from kusanagi_nerv.domain.jobs import Job
+from kusanagi_nerv.domain.models import DeployState
 from kusanagi_nerv.repositories.jobs import (
     IdempotencyConflict,
     JobRepository,
     RepositoryUnavailable,
 )
+from kusanagi_nerv.repositories.models import ModelRepository
 from kusanagi_nerv.repositories.postgres import PostgresJobRepository
+from kusanagi_nerv.serving.artifacts import (
+    ArtifactUnavailable,
+    InvalidArtifact,
+    load_artifact,
+)
+from kusanagi_nerv.serving.prediction import PredictRequest, ServePredictor
 
 
 async def get_repository(request: Request) -> JobRepository:
     return cast(JobRepository, request.app.state.job_repository)
+
+
+async def get_model_repository(request: Request) -> ModelRepository:
+    models = getattr(request.app.state, "model_repository", None)
+    if models is None:
+        raise RepositoryUnavailable("Model storage is unavailable")
+    return models
+
+
+async def get_predictor(request: Request) -> ServePredictor:
+    return request.app.state.predictor
+
+
+def model_error(
+    status: int,
+    code: Literal[
+        "model_not_found",
+        "invalid_artifact",
+        "artifact_unavailable",
+        "model_not_ready",
+        "serving_unavailable",
+    ],
+    message: str,
+) -> JSONResponse:
+    body = ErrorResponse(error=ApiError(code=code, message=message))
+    return JSONResponse(status_code=status, content=body.model_dump(mode="json"))
 
 
 async def get_tenant_id() -> str:
@@ -47,19 +85,23 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        if repository is not None:
-            app.state.job_repository = repository
-            yield
-        else:
-            assert url is not None
-            engine = create_database_engine(url)
-            app.state.job_repository = PostgresJobRepository(
-                async_sessionmaker(engine, expire_on_commit=False)
-            )
-            try:
+        predictor = app.state.predictor = ServePredictor()
+        try:
+            if repository is not None:
+                app.state.job_repository = repository
                 yield
-            finally:
-                await engine.dispose()
+            else:
+                assert url is not None
+                engine = create_database_engine(url)
+                sessions = async_sessionmaker(engine, expire_on_commit=False)
+                app.state.job_repository = PostgresJobRepository(sessions)
+                app.state.model_repository = ModelRepository(sessions)
+                try:
+                    yield
+                finally:
+                    await engine.dispose()
+        finally:
+            await predictor.aclose()
 
     app = FastAPI(
         title="KUSANAGI NERV",
@@ -244,5 +286,86 @@ def create_app(
             return JSONResponse(status_code=404, content=body.model_dump(mode="json"))
         response.status_code = 202 if job.status == JobStatus.CANCELLING else 200
         return JobView.from_job(job)
+
+    @app.get(
+        "/v1/models/{model_id}",
+        response_model=ModelView,
+        responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+    )
+    async def get_model(
+        model_id: UUID,
+        models: Annotated[ModelRepository, Depends(get_model_repository)],
+        tenant_id: Annotated[str, Depends(get_tenant_id)],
+    ) -> ModelView | JSONResponse:
+        model = await models.get(tenant_id=tenant_id, model_id=model_id)
+        if model is None:
+            return model_error(404, "model_not_found", "Model not found")
+        return ModelView.from_model(model)
+
+    @app.post(
+        "/v1/models/{model_id}/deploy",
+        response_model=ModelView,
+        responses={
+            202: {"model": ModelView},
+            404: {"model": ErrorResponse},
+            409: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
+    )
+    async def deploy_model(
+        model_id: UUID,
+        response: Response,
+        models: Annotated[ModelRepository, Depends(get_model_repository)],
+        tenant_id: Annotated[str, Depends(get_tenant_id)],
+    ) -> ModelView | JSONResponse:
+        model = await models.get(tenant_id=tenant_id, model_id=model_id)
+        if model is None:
+            return model_error(404, "model_not_found", "Model not found")
+        if model.deploy_state in (DeployState.NOT_DEPLOYED, DeployState.FAILED):
+            try:
+                await asyncio.to_thread(
+                    load_artifact, model.artifact_uri, model.artifact_sha256
+                )
+            except InvalidArtifact:
+                return model_error(
+                    409, "invalid_artifact", "Model artifact is invalid or missing"
+                )
+            except ArtifactUnavailable:
+                return model_error(
+                    503, "artifact_unavailable", "Model artifact could not be verified"
+                )
+            model = await models.request_deploy(tenant_id=tenant_id, model_id=model_id)
+            if model is None:
+                return model_error(404, "model_not_found", "Model not found")
+        response.status_code = 200 if model.deploy_state is DeployState.READY else 202
+        response.headers["Location"] = f"/v1/models/{model_id}"
+        return ModelView.from_model(model)
+
+    @app.post(
+        "/v1/models/{model_id}/predict",
+        response_model=PredictionView,
+        responses={status: {"model": ErrorResponse} for status in (404, 409, 422, 503)},
+    )
+    async def predict_model(
+        model_id: UUID,
+        batch: PredictRequest,
+        models: Annotated[ModelRepository, Depends(get_model_repository)],
+        tenant_id: Annotated[str, Depends(get_tenant_id)],
+        predictor: Annotated[ServePredictor, Depends(get_predictor)],
+    ) -> PredictionView | JSONResponse:
+        model = await models.get(tenant_id=tenant_id, model_id=model_id)
+        if model is None:
+            return model_error(404, "model_not_found", "Model not found")
+        if model.deploy_state is not DeployState.READY:
+            return model_error(409, "model_not_ready", "Model deployment is not ready")
+        try:
+            predictions = await predictor.predict(model, batch)
+        except ExecutorUnavailable:
+            return model_error(
+                503, "serving_unavailable", "Predictions are unavailable"
+            )
+        return PredictionView(
+            model_id=model_id, version=model.version, predictions=predictions
+        )
 
     return app

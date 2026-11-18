@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -14,8 +14,15 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from kusanagi_nerv.api.app import create_app
 from kusanagi_nerv.db.connection import database_url
-from kusanagi_nerv.db.models import JobRow
-from kusanagi_nerv.domain.execution import CheckpointRef, ExecutionStatus, FailureKind
+from kusanagi_nerv.db.models import AttemptRow, JobRow, ModelRow
+from kusanagi_nerv.domain.execution import (
+    CheckpointRef,
+    ExecutionResult,
+    ExecutionStatus,
+    FailureKind,
+    LeaseLost,
+    TrainingExecutionResult,
+)
 from kusanagi_nerv.domain.job_lifecycle import InvalidJobTransition, JobStatus
 from kusanagi_nerv.domain.jobs import Job, JobResources, JobSpecification
 from kusanagi_nerv.repositories.attempts import AttemptRepository
@@ -65,8 +72,6 @@ async def test_all_job_metadata_survives_storage(
         attempt=1,
         checkpoint_uri="test://checkpoint",
         artifact_uri="test://artifact",
-        result_model_id=uuid4(),
-        result_model_version="v1",
         waiting_reason="observed",
         error="recorded diagnostic",
     )
@@ -266,7 +271,7 @@ async def test_repeated_upgrade_preserves_data_and_schema_matches_models(
     async with engine.connect() as connection:
         assert (
             await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0006_retry_checkpoint"
+            == "0009_job_model_result"
         )
 
 
@@ -319,6 +324,205 @@ async def test_upgrade_preserves_a_pending_training_retry(
     successor = await attempts.claim_next(**claim_options)
     assert successor is not None
     assert successor.job.attempt == 2 and successor.resume_checkpoint == checkpoint
+
+
+async def test_training_success_registers_one_model_under_competing_observations(
+    repository: PostgresJobRepository, job: Job, engine: AsyncEngine
+) -> None:
+    job = replace(job, spec=replace(job.spec, resources=JobResources(2, 0, 0.25)))
+    await repository.add(job)
+    attempts = AttemptRepository(async_sessionmaker(engine, expire_on_commit=False))
+    claim = await attempts.claim_next(
+        owner="training-controller",
+        executor_kind="ray-training-v1",
+        lease_seconds=30,
+    )
+    assert claim is not None
+    result = TrainingExecutionResult(
+        worker_pid=123,
+        completed_steps=job.spec.epochs,
+        checksum="a" * 64,
+        artifact_uri=f"s3://test-bucket/jobs/{job.job_id}/attempts/{claim.submission_id}/model.pt",
+        first_epoch=1,
+        restored_optimizer_step=0,
+    )
+    for incomplete in (None, ExecutionResult(123, 5, "a" * 64)):
+        observed = await attempts.observe(
+            claim, ExecutionStatus.SUCCEEDED, result=incomplete
+        )
+        assert observed is not None
+        assert observed.attempt_id == claim.attempt_id
+        assert observed.job.status is JobStatus.QUEUED
+        assert observed.job.waiting_reason == "executor_outcome_unknown"
+        assert observed.job.result_model_id is None
+        claim = observed
+    with pytest.raises(RepositoryUnavailable):
+        await attempts.observe(
+            claim, ExecutionStatus.SUCCEEDED, result=replace(result, checksum="bad")
+        )
+    pending = await repository.get(tenant_id=job.tenant_id, job_id=job.job_id)
+    assert pending is not None and pending.status == JobStatus.QUEUED
+    assert pending.result_model_id is None and pending.artifact_uri is None
+    async with engine.connect() as connection:
+        assert await connection.scalar(select(ModelRow.model_id)) is None
+        assert await connection.scalar(select(AttemptRow.finished_at)) is None
+
+    outcomes = await asyncio.gather(
+        attempts.observe(claim, ExecutionStatus.SUCCEEDED, result=result),
+        attempts.observe(claim, ExecutionStatus.SUCCEEDED, result=result),
+        return_exceptions=True,
+    )
+    assert outcomes.count(None) == 1
+    assert sum(isinstance(outcome, LeaseLost) for outcome in outcomes) == 1
+    completed = await repository.get(tenant_id=job.tenant_id, job_id=job.job_id)
+    assert completed is not None and completed.status == JobStatus.SUCCEEDED
+    assert (
+        completed.result_model_id is not None and completed.result_model_version == "v1"
+    )
+    assert completed.artifact_uri == result.artifact_uri
+    async with engine.connect() as connection:
+        model = (await connection.execute(select(ModelRow.__table__))).mappings().one()
+        assert model["id"] == completed.result_model_id
+        assert (
+            model["source_job_id"] == job.job_id and model["tenant_id"] == job.tenant_id
+        )
+        assert model["version"] == completed.result_model_version
+        assert model["artifact_uri"] == result.artifact_uri
+        assert model["artifact_sha256"] == result.checksum
+
+
+async def test_upgrade_registers_preexisting_verified_training_success(
+    repository: PostgresJobRepository,
+    job: Job,
+    engine: AsyncEngine,
+    migrate: Callable[..., object],
+) -> None:
+    await asyncio.to_thread(migrate, "downgrade", "0006_retry_checkpoint")
+    job = replace(job, spec=replace(job.spec, resources=JobResources(2, 0, 0.25)))
+    await repository.add(job)
+    attempts = AttemptRepository(async_sessionmaker(engine, expire_on_commit=False))
+    claim = await attempts.claim_next(
+        owner="training-controller",
+        executor_kind="ray-training-v1",
+        lease_seconds=30,
+    )
+    assert claim is not None
+    result = TrainingExecutionResult(
+        worker_pid=123,
+        completed_steps=job.spec.epochs,
+        checksum="a" * 64,
+        artifact_uri=f"s3://test-bucket/jobs/{job.job_id}/attempts/{claim.submission_id}/model.pt",
+        first_epoch=1,
+        restored_optimizer_step=0,
+    )
+    # Write the legacy terminal observation using the pre-registry schema.
+    async with engine.begin() as connection:
+        await connection.execute(
+            update(JobRow)
+            .where(JobRow.job_id == job.job_id)
+            .values(status=JobStatus.SUCCEEDED, artifact_uri=result.artifact_uri)
+        )
+        await connection.execute(
+            update(AttemptRow)
+            .where(AttemptRow.attempt_id == claim.attempt_id)
+            .values(
+                execution_result=asdict(result),
+                last_observation=ExecutionStatus.SUCCEEDED,
+                finished_at=func.clock_timestamp(),
+            )
+        )
+    unverified = replace(
+        job,
+        job_id=uuid4(),
+        status=JobStatus.SUCCEEDED,
+        artifact_uri=result.artifact_uri,
+    )
+    await repository.add(unverified)
+    await asyncio.to_thread(migrate, "upgrade", "head")
+    completed = await repository.get(tenant_id=job.tenant_id, job_id=job.job_id)
+    assert completed is not None and completed.result_model_id is not None
+    assert completed.result_model_version == "v1"
+    assert (
+        await repository.get(tenant_id=job.tenant_id, job_id=unverified.job_id)
+        == unverified
+    )
+    async with engine.connect() as connection:
+        model = (await connection.execute(select(ModelRow.__table__))).mappings().one()
+        assert model["id"] == completed.result_model_id
+        assert (
+            model["source_job_id"] == job.job_id and model["tenant_id"] == job.tenant_id
+        )
+        assert model["artifact_uri"] == result.artifact_uri
+        assert model["artifact_sha256"] == result.checksum
+    await asyncio.to_thread(migrate, "upgrade", "head")
+    assert await repository.get(tenant_id=job.tenant_id, job_id=job.job_id) == completed
+
+
+async def test_upgrade_repairs_and_enforces_job_model_links(
+    repository: PostgresJobRepository,
+    job: Job,
+    engine: AsyncEngine,
+    migrate: Callable[..., object],
+) -> None:
+    await asyncio.to_thread(migrate, "downgrade", "0008_model_deployments")
+    completed = replace(
+        job, status=JobStatus.SUCCEEDED, artifact_uri="s3://test/model.pt"
+    )
+    model_id = uuid4()
+    legacy = replace(completed, job_id=uuid4(), result_model_id=model_id)
+    await repository.add(completed)
+    await repository.add(legacy)
+    async with engine.begin() as connection:
+        await connection.execute(
+            ModelRow.__table__.insert().values(
+                id=model_id,
+                source_job_id=completed.job_id,
+                tenant_id=completed.tenant_id,
+                version="v1",
+                artifact_uri=completed.artifact_uri,
+                artifact_sha256="a" * 64,
+            )
+        )
+        await connection.execute(
+            update(JobRow)
+            .where(JobRow.job_id == completed.job_id)
+            .values(result_model_id=uuid4(), result_model_version="v2")
+        )
+
+    await asyncio.to_thread(migrate, "upgrade", "head")
+    registered = await repository.get(tenant_id=job.tenant_id, job_id=completed.job_id)
+    assert registered is not None
+    assert (
+        registered.result_model_id == model_id
+        and registered.result_model_version == "v1"
+    )
+    repaired = await repository.get(tenant_id=job.tenant_id, job_id=legacy.job_id)
+    assert repaired is not None
+    assert repaired.result_model_id is None and repaired.result_model_version is None
+    assert (
+        repaired.status is JobStatus.SUCCEEDED
+        and repaired.artifact_uri == legacy.artifact_uri
+    )
+
+    for job_id, invalid_id, invalid_version in (
+        (completed.job_id, uuid4(), "v1"),
+        (legacy.job_id, model_id, "v1"),
+        (completed.job_id, model_id, "v2"),
+        (completed.job_id, model_id, None),
+    ):
+        with pytest.raises(IntegrityError):
+            async with engine.begin() as connection:
+                await connection.execute(
+                    update(JobRow)
+                    .where(JobRow.job_id == job_id)
+                    .values(
+                        result_model_id=invalid_id, result_model_version=invalid_version
+                    )
+                )
+    assert (
+        await repository.get(tenant_id=job.tenant_id, job_id=completed.job_id)
+        == registered
+    )
 
 
 def test_unmigrated_database_returns_503_without_creating_schema(

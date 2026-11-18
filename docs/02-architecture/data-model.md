@@ -57,6 +57,34 @@ publication history is kept. The success transaction also sets
 `jobs.artifact_uri` and records the restored epoch/Adam step in the attempt result.
 See [checkpoint recovery](../06-engineering/checkpoint-recovery.md).
 
+## Implemented in MLP-011 — model registration
+
+Migration `0007_model_registry` adds one `models` row per source training job,
+with its tenant, model ID, `v1` version, S3 artifact URI and SHA-256. The fenced
+success transaction inserts the row and publishes its ID and version on the job
+alongside the terminal attempt result. The job lock and unique source-job
+constraint prevent duplicate registrations. The migration backfills completed
+MLP-010 jobs from their verified terminal attempt evidence. Deploy must still
+check that the saved artifact is currently available and intact.
+
+`0009_job_model_result` guards result links with a deferred foreign key to
+the registered model, source job, tenant and version. If a training success
+observation lacks a compatible result, the attempt remains open with an
+unknown outcome until the controller can reconcile it.
+
+`0008_model_deployments` adds `deploy_state`, `deploy_revision` and `deploy_error`.
+The first deployment request and each explicit failed retry increment the
+revision. Repeated requests for a deploying or ready model keep that revision.
+The reconciler checks the desired application configuration and records status
+only against the observed revision. Confirmed observations survive a failed
+configuration publication. A failed revision is committed before the controller
+removes its application from Ray. A PostgreSQL advisory transaction lock
+serializes complete configuration writes for the ledger. See [model deployment](../06-engineering/model-deployment.md).
+
+Prediction uses the tenant-scoped ready model and its immutable artifact
+reference. Before forwarding values to the caller, the API verifies the replica's
+model ID, version, artifact SHA-256, deployment revision and output count.
+
 ## Proposed tables
 
 The remaining target schema includes:
@@ -70,7 +98,7 @@ job_attempts(id, job_id, attempt_no, submission_id, ray_cluster_ref, status,
              lease_owner, lease_epoch, lease_expires_at, submission_intent_at,
              started_at, finished_at, reservation_held,
              error_class, error_text, resume_checkpoint_uri, checkpoint_uri)
-models(id, tenant_id, source_job_id, version, artifact_uri,
+models(id, tenant_id, source_job_id, version, artifact_uri, artifact_sha256,
        deploy_state, deployment_identity, deploy_error, created_at)
 ```
 

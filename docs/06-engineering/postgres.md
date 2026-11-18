@@ -34,11 +34,11 @@ uv run --locked ruff check src tests migrations
 uv run --locked ruff format --check src tests migrations
 uv run --locked pytest -q -m 'not integration and not ray and not ray_jobs and not training and not ray_train and not recovery'
 export KUSANAGI_TEST_DATABASE_URL='postgresql+asyncpg://kusanagi:local-development-only@127.0.0.1:55432/postgres'
-uv run --locked pytest -q tests/integration -m 'not ray_jobs and not recovery'
+uv run --locked pytest -q tests/integration -m 'not ray_jobs and not recovery and not serving'
 uv build
 ```
 
-With the test URL and [local S3 configuration](checkpoint-recovery.md) exported, `uv run --locked --extra recovery pytest -q` runs the full suite, including Ray, PyTorch and recovery tests. Without it, PostgreSQL integration cases are explicitly skipped, not counted as database evidence. CI runs fast checks and a separate PostgreSQL service job on pull requests, including dependent PRs.
+With the test URL and [local S3 configuration](checkpoint-recovery.md) exported, run `uv run --locked --extra recovery --extra serving pytest -q` for the full suite on Linux. On macOS use the recovery extra for training and the separate [serving environment](model-deployment.md) for Serve. PostgreSQL integration cases are skipped if the test database URL is unset. CI runs fast checks and a separate PostgreSQL service job on pull requests.
 
 The test role needs `CREATEDB`. Each integration case creates a randomly named `kusanagi_test_<uuid>` database, applies Alembic, then drops only that owned database. The database named in the supplied test URL is used for administration and is never reset. Tests include a real Uvicorn process killed after a successful response, followed by a fresh API process reading the persisted record.
 
@@ -74,4 +74,7 @@ This is a storage primitive, not execution authorization. It does not establish 
 - A lost connection during commit can leave the outcome unknown; the server may have committed despite a failed response. There is no automatic write retry. Repeating an unkeyed POST may create another logical job. Repeating the same tenant/key/payload resolves that uncertainty through durable idempotency.
 - `0002_attempt_leases` adds attempt history, fenced leases and simulated dispatch; see [the data model](../02-architecture/data-model.md#implemented-in-mlp-004). `0003_retry_cancel` adds retry deadlines, failure classification and cancellation metadata; `0004_ray_dispatch` adds target pinning, dispatch admission/revocation and dummy execution results; see the [Ray Jobs guide](ray-jobs.md).
 - `0005_training_checkpoints` adds published and selected resume references to attempts. `0006_retry_checkpoint` persists the verified checkpoint selected by a failed attempt for its successor and backfills earlier selections. See [checkpoint recovery](checkpoint-recovery.md).
+- `0007_model_registry` adds immutable model records and backfills successful training jobs with verified artifact evidence. Stop all controllers connected to the ledger before upgrading from `0006`, then start the updated controllers after the migration. See [model registration](../02-architecture/data-model.md#implemented-in-mlp-011--model-registration).
+- `0008_model_deployments` adds model deployment state and its revision. Existing models start as `not_deployed`. See [model deployment](model-deployment.md).
+- `0009_job_model_result` reconciles existing result fields with the registry and enforces a job, tenant, model ID and version match. A legacy result without a matching model becomes null. The migration keeps the job, artifact and attempt metadata.
 - The fixed tenant is still test-only; production authentication and tenancy controls remain later milestones. Database persistence does not imply model training, backup/restore testing or high availability.
