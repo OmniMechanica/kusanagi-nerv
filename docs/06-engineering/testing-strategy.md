@@ -16,7 +16,7 @@
 | Full E2E | Submit → train → restore → serve → predict | MLP-013 |
 | Chaos | Controller/worker/object-store failure matrix | MLP-020 |
 
-MLP-003 adds an `integration` marker and a separate PostgreSQL CI service job. Fast checks exclude `integration`, `ray`, `ray_jobs`, `training` and `ray_train`. Locally, DB cases require `KUSANAGI_TEST_DATABASE_URL`; missing configuration produces visible skips, not database evidence. Every DB case uses an owned disposable database. The process-crash test kills a real Uvicorn process after `202` and verifies the job through a new API process. See [reproduction commands](postgres.md#run-the-checks).
+MLP-003 adds an `integration` marker and a separate PostgreSQL CI service job. Fast checks exclude `integration`, `ray`, `ray_jobs`, `training`, `ray_train` and `recovery`. Locally, DB cases require `KUSANAGI_TEST_DATABASE_URL`; missing configuration produces visible skips, not database evidence. Every DB case uses an owned disposable database. The process-crash test kills a real Uvicorn process after `202` and verifies the job through a new API process. See [reproduction commands](postgres.md#run-the-checks).
 
 MLP-006 adds a separate `ray` marker and CPU-only CI job with the optional Ray
 extra installed. Five real process cases exercise independent CPU/window limits,
@@ -44,6 +44,17 @@ runtime. It checks repeated two-rank CPU DDP, agreement with a serial equivalent
 batch for predictions and train MSE, artifact reload, and the absence of
 start/result events on a confirmed GPU placement timeout. A subprocess test
 checks startup cleanup when `SIGTERM` arrives before Ray imports. See [Ray Train](ray-train.md).
+
+MLP-010 adds the `recovery` marker and a CI job with real Ray Jobs, Ray Train,
+PostgreSQL and an S3-compatible server. Cases cover immutable object writes and
+read integrity, lost submit acknowledgement and controller retry budgets of zero,
+one and two. The two-retry case loses a second worker after restore and checks
+that the third attempt still resumes from the original checkpoint. Separate cases
+exercise Ray cancellation during an S3 outage and reject object data with a
+matching SHA-256 metadata value but a different computed hash. See [checkpoint recovery](checkpoint-recovery.md).
+Regressions also cover short S3 response bodies, checkpoint searches that span
+multiple controller polls, deleted inherited checkpoints, and the public
+checkpoint URI after recovery falls back to an earlier epoch.
 
 ## Non-flaky testing principles
 

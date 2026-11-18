@@ -21,6 +21,7 @@ ray = ["ray==2.60.0"]
 ray-jobs = ["ray[default]==2.60.0"]
 training = ["numpy>=2,<3", "torch==2.15.0"]
 ray-train = ["kusanagi-nerv[training]", "ray[train]==2.60.0"]
+recovery = ["kusanagi-nerv[ray-jobs,ray-train]", "boto3>=1.42,<2"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
@@ -43,6 +44,7 @@ markers = [
     "ray_jobs: requires PostgreSQL and a real Ray Jobs cluster with the ray-jobs extra",
     "training: trains a real CPU model using the training extra",
     "ray_train: runs distributed PyTorch with Ray Train and the ray-train extra",
+    "recovery: requires real Ray Jobs, Ray Train, PostgreSQL and S3 storage",
 ]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

@@ -100,6 +100,8 @@ def test_two_real_workers_produce_repeatable_weights_and_metrics(
                 "device": "cpu",
                 "rank": 0,
                 "worker_pid": workers[0]["pid"],
+                "first_epoch": 1,
+                "restored_optimizer_step": 0,
             }
             for event in starts
         )

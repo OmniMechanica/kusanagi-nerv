@@ -18,5 +18,18 @@ services:
       timeout: 3s
       retries: 20
 
+  s3:
+    image: chrislusf/seaweedfs:4.53@sha256:ccad23e18639c8b98cee17e7100b95830a06077b56d8e5b006d6dcf8ec5e94a0
+    command: ["mini", "-dir=/data"]
+    environment:
+      AWS_ACCESS_KEY_ID: kusanagi-local
+      AWS_SECRET_ACCESS_KEY: local-development-only
+      S3_BUCKET: kusanagi-training
+    ports:
+      - "127.0.0.1:${KUSANAGI_S3_PORT:-58333}:8333"
+    volumes:
+      - s3-data:/data
+
 volumes:
   postgres-data:
+  s3-data:

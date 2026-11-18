@@ -2,8 +2,8 @@
 
 MLP-009 runs the MLP-008 regressor with Ray Train v2 and PyTorch
 `DistributedDataParallel` (DDP). The CPU run is **TESTED-CPU**. The CUDA path
-is **DESIGN-ONLY** for execution. The durable controller will consume the
-training result and resume from checkpoints in MLP-010.
+is **DESIGN-ONLY** for execution. The durable controller consumes training results and resumes from checkpoints
+through the [MLP-010 recovery adapter](checkpoint-recovery.md).
 
 ## Run an attempt
 

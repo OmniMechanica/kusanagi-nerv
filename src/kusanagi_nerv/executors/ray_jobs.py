@@ -147,7 +147,9 @@ class RayJobsExecutor:
         ):
             raise ExecutorUnavailable("Ray cluster identity is unavailable or changed")
 
-    async def _lookup(self, record: DispatchRecord) -> ExecutionObservation:
+    async def _lookup(
+        self, record: DispatchRecord, *, for_stop: bool = False
+    ) -> ExecutionObservation:
         if record.revoked and not record.started:
             return ExecutionObservation(ExecutionStatus.CANCELLED)
         await self._check_cluster()
@@ -168,7 +170,7 @@ class RayJobsExecutor:
             or not isinstance(data.get("metadata"), dict)
             or any(
                 data["metadata"].get(key) != value
-                for key, value in metadata(record).items()
+                for key, value in self._metadata(record).items()
             )
         ):
             return UNKNOWN  # Never adopt a foreign job under a colliding identity.
@@ -178,9 +180,12 @@ class RayJobsExecutor:
         if status == "STOPPED":
             return ExecutionObservation(ExecutionStatus.CANCELLED)
         if status == "FAILED":
-            # Ray status does not prove a failure is transient; conservative default.
-            return ExecutionObservation(ExecutionStatus.FAILED)
-        if status == "PENDING":
+            if for_stop:
+                return ExecutionObservation(ExecutionStatus.FAILED)
+            return await self._failed(record, data)
+        if status == "PENDING" or (for_stop and status == "RUNNING"):
+            # A verified active Ray Job can be stopped without parsing its
+            # workload logs or probing services that the workload depends on.
             return ExecutionObservation(ExecutionStatus.PENDING)
         if status not in {"RUNNING", "SUCCEEDED"}:
             return UNKNOWN
@@ -190,6 +195,18 @@ class RayJobsExecutor:
         logs = self._json(response).get("logs")
         if not isinstance(logs, str):
             return UNKNOWN
+        return await self._from_logs(record, status, logs)
+
+    def _metadata(self, record: DispatchRecord) -> dict[str, str]:
+        return metadata(record)
+
+    async def _failed(self, record: DispatchRecord, data: dict) -> ExecutionObservation:
+        # Ray status alone cannot prove a failure is transient.
+        return ExecutionObservation(ExecutionStatus.FAILED)
+
+    async def _from_logs(
+        self, record: DispatchRecord, status: str, logs: str
+    ) -> ExecutionObservation:
         events = workload_events(logs, record.claim.submission_id)
         if status == "RUNNING":
             return ExecutionObservation(
@@ -218,27 +235,34 @@ class RayJobsExecutor:
         )
 
     async def lookup(self, submission_id: str) -> ExecutionObservation:
-        record = await self.store.read_dispatch(submission_id, self.target)
+        record = await self.store.read_dispatch(submission_id, self.target, self.kind)
         return UNKNOWN if record is None else await self._lookup(record)
 
     async def submit(self, claim: Claim) -> ExecutionObservation:
         if claim.executor_target != self.target or claim.job.spec.resources.gpus != 0:
             return UNKNOWN
         await self._check_cluster()
-        if not await self.store.begin_dispatch(claim):
+        if not await self.store.begin_dispatch(claim, self.kind):
             return await self.cancel(claim.submission_id)
-        record = await self.store.read_dispatch(claim.submission_id, self.target)
+        record = await self.store.read_dispatch(
+            claim.submission_id, self.target, self.kind
+        )
         if record is None:
             return UNKNOWN
         # A revocation may commit after admission; cancellation then knows this
         # request can still arrive and cannot finalize from NOT_FOUND.
         if record.revoked or record.claim.job.requested_cancel_at is not None:
             return await self.cancel(claim.submission_id)
+        await self._request("POST", "/api/jobs/", json=self._payload(record))
+        return await self.lookup(claim.submission_id)
+
+    def _payload(self, record: DispatchRecord) -> dict:
+        claim = record.claim
         resources = claim.job.spec.resources
-        payload = {
+        return {
             "submission_id": claim.submission_id,
             "entrypoint": self.entrypoint,
-            "metadata": metadata(record),
+            "metadata": self._metadata(record),
             "entrypoint_num_cpus": resources.cpus,
             "entrypoint_num_gpus": 0,
             "entrypoint_memory": int(resources.memory_gib * 1024**3),
@@ -254,16 +278,12 @@ class RayJobsExecutor:
                 }
             },
         }
-        # Even a 400 can mean an existing identity. Never treat an HTTP response
-        # (or a lost response) as a confirmed execution failure; look up the ID.
-        await self._request("POST", "/api/jobs/", json=payload)
-        return await self.lookup(claim.submission_id)
 
     async def cancel(self, submission_id: str) -> ExecutionObservation:
-        record = await self.store.revoke_dispatch(submission_id, self.target)
+        record = await self.store.revoke_dispatch(submission_id, self.target, self.kind)
         if record is None:
             return UNKNOWN
-        observation = await self._lookup(record)
+        observation = await self._lookup(record, for_stop=True)
         if observation.status in {
             ExecutionStatus.SUCCEEDED,
             ExecutionStatus.FAILED,
@@ -272,5 +292,5 @@ class RayJobsExecutor:
             return observation
         if observation.status in {ExecutionStatus.PENDING, ExecutionStatus.RUNNING}:
             await self._request("POST", f"/api/jobs/{submission_id}/stop")
-            return await self.lookup(submission_id)
+            return await self._lookup(record, for_stop=True)
         return UNKNOWN

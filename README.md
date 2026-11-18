@@ -27,12 +27,12 @@ when using `uv run`.
 ```bash
 uv run --locked ruff check src tests migrations
 uv run --locked ruff format --check src tests migrations
-uv run --locked pytest -q -m 'not integration and not ray and not ray_jobs and not training and not ray_train'
+uv run --locked pytest -q -m 'not integration and not ray and not ray_jobs and not training and not ray_train and not recovery'
 uv build
 ```
 
 The [CI workflow](.github/workflows/ci.yml) runs fast checks, PostgreSQL integration,
-Ray Core, Ray Jobs integration, standalone PyTorch training and Ray Train DDP on
+Ray Core, Ray Jobs integration, standalone PyTorch training, Ray Train DDP and S3 recovery on
 pull requests and pushes to `main`. Build artifacts go to the ignored `dist/` directory. See the
 [PostgreSQL guide](docs/06-engineering/postgres.md#run-the-checks) for database tests.
 
@@ -157,6 +157,13 @@ Each worker trains on a disjoint shard and synchronizes gradients with PyTorch
 DDP. The start event and result carry the submission ID. The result includes
 rank PIDs, metrics and the loadable weights path. See the [Ray Train guide](docs/06-engineering/ray-train.md).
 
+## Recover training after a worker failure
+
+The `--executor ray-training` controller runs the DDP workload as a Ray Job and
+stores epoch checkpoints and final weights in S3. The recovery experiment kills
+rank zero after a committed checkpoint and verifies that a new attempt loads the
+exact saved model, Adam state and minibatch generator. See the [recovery runbook](docs/06-engineering/checkpoint-recovery.md).
+
 ## Implemented increments
 
 - [MLP-001](docs/03-planning/tasks/MLP-001.md): eight-state pure Python
@@ -186,11 +193,14 @@ rank PIDs, metrics and the loadable weights path. See the [Ray Train guide](docs
   training, held-out metrics and loadable model weights with metadata. PR #11 merged;
   learning drill pending.
 - [MLP-009](docs/03-planning/tasks/MLP-009.md): multi-worker CPU DDP, ranked worker
-  evidence and an attempt-scoped start/result contract. In review.
+  evidence and an attempt-scoped start/result contract. PR #12 merged.
+- [MLP-010](docs/03-planning/tasks/MLP-010.md): controller-owned retry after a real
+  worker failure, explicit S3 checkpoint restore and final artifact publication.
+  In review.
 
-The full suite has 334 tests across six suites: 252 fast, 65 PostgreSQL, 5 Ray
-Core, 5 Ray Jobs/PostgreSQL, 4 PyTorch CPU and 3 Ray Train cases. Each integration
-suite requires its documented environment.
+The full suite has 346 tests across seven suites: 252 fast, 66 PostgreSQL, 5 Ray
+Core, 5 Ray Jobs/PostgreSQL, 4 PyTorch CPU, 3 Ray Train and 11 S3 recovery cases.
+Each integration suite requires its documented environment.
 See the [progress journal](docs/03-planning/progress.md)
 for local verification, hosted checks and scope. Static analysis with mypy/Pyright
 remains a P1 follow-up; runtime schema validation and Ruff are enforced now.
