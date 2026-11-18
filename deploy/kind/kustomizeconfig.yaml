@@ -1,0 +1,11 @@
+nameReference:
+  - kind: ConfigMap
+    fieldSpecs:
+      - kind: RayCluster
+        path: spec/headGroupSpec/template/spec/volumes/configMap/name
+      - kind: RayCluster
+        path: spec/workerGroupSpecs/template/spec/volumes/configMap/name
+      - kind: RayService
+        path: spec/rayClusterConfig/headGroupSpec/template/spec/volumes/configMap/name
+      - kind: RayService
+        path: spec/rayClusterConfig/workerGroupSpecs/template/spec/volumes/configMap/name

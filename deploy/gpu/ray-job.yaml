@@ -1,0 +1,78 @@
+apiVersion: ray.io/v1
+kind: RayJob
+metadata:
+  name: gpu-probe
+spec:
+  entrypoint: python /opt/kusanagi/gpu/gpu_probe.py
+  submissionMode: K8sJobMode
+  backoffLimit: 0
+  preRunningDeadlineSeconds: 600
+  activeDeadlineSeconds: 900
+  shutdownAfterJobFinishes: true
+  ttlSecondsAfterFinished: 120
+  submitterConfig:
+    backoffLimit: 0
+  submitterPodTemplate:
+    spec:
+      serviceAccountName: ray-workload
+      restartPolicy: Never
+      containers:
+        - name: ray-job-submitter
+          image: rayproject/ray:2.60.0-py312-gpu@sha256:cfb96058a6667bc17120692785fa7467c543ce4660300c7ef5cb2b4b771b8cd0
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: void
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+  rayClusterSpec:
+    rayVersion: "2.60.0"
+    enableInTreeAutoscaling: false
+    headGroupSpec:
+      serviceType: ClusterIP
+      rayStartParams:
+        num-cpus: "0"
+        num-gpus: "0"
+        dashboard-host: "0.0.0.0"
+      template:
+        spec:
+          serviceAccountName: ray-workload
+          containers:
+            - name: ray-head
+              image: rayproject/ray:2.60.0-py312-gpu@sha256:cfb96058a6667bc17120692785fa7467c543ce4660300c7ef5cb2b4b771b8cd0
+              env:
+                - name: NVIDIA_VISIBLE_DEVICES
+                  value: void
+              resources:
+                requests: {cpu: 500m, memory: 1Gi}
+                limits: {cpu: "1", memory: 2Gi}
+              volumeMounts:
+                - name: probe-code
+                  mountPath: /opt/kusanagi/gpu
+                  readOnly: true
+          volumes:
+            - name: probe-code
+              configMap:
+                name: gpu-probe-code
+    workerGroupSpecs:
+      - groupName: dedicated-gpu
+        replicas: 1
+        rayStartParams: {}
+        template:
+          spec:
+            serviceAccountName: ray-workload
+            nodeSelector:
+              kusanagi-nerv.io/gpu-pool: dedicated
+            tolerations:
+              - key: nvidia.com/gpu
+                operator: Exists
+                effect: NoSchedule
+            containers:
+              - name: ray-worker
+                image: rayproject/ray:2.60.0-py312-gpu@sha256:cfb96058a6667bc17120692785fa7467c543ce4660300c7ef5cb2b4b771b8cd0
+                env:
+                  - name: NVIDIA_DRIVER_CAPABILITIES
+                    value: compute,utility
+                resources:
+                  requests: {cpu: "2", memory: 4Gi, nvidia.com/gpu: 1}
+                  limits: {cpu: "2", memory: 4Gi, nvidia.com/gpu: 1}

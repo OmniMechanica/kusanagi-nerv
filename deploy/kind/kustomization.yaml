@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: kusanagi-nerv
+
+resources:
+  - service-account.yaml
+  - ray-cluster.yaml
+  - ray-service.yaml
+
+configMapGenerator:
+  - name: cpu-workloads
+    files:
+      - workloads/batch.py
+      - workloads/predictor.py
+      - workloads/scoring.py
+
+configurations:
+  - kustomizeconfig.yaml

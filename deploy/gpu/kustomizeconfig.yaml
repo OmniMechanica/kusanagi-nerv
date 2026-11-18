@@ -1,0 +1,5 @@
+nameReference:
+  - kind: ConfigMap
+    fieldSpecs:
+      - kind: RayJob
+        path: spec/rayClusterSpec/headGroupSpec/template/spec/volumes/configMap/name
