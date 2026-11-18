@@ -1,0 +1,27 @@
+apiVersion: ray.io/v1
+kind: RayJob
+metadata:
+  name: cpu-batch-score
+  namespace: kusanagi-nerv
+spec:
+  clusterSelector:
+    ray.io/cluster: cpu-batch
+  entrypoint: python /opt/kusanagi/workloads/batch.py
+  submissionMode: K8sJobMode
+  shutdownAfterJobFinishes: false
+  backoffLimit: 0
+  submitterConfig:
+    backoffLimit: 0
+  preRunningDeadlineSeconds: 180
+  activeDeadlineSeconds: 300
+  submitterPodTemplate:
+    spec:
+      serviceAccountName: ray-workload
+      restartPolicy: Never
+      containers:
+        - name: ray-job-submitter
+          image: rayproject/ray:2.60.0-py312-cpu@sha256:307d271427cbca373affad1c1d406776acd5f5a5dd041523008c8d44a796e4fd
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}

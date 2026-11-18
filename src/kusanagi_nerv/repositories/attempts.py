@@ -10,7 +10,7 @@ from uuid import uuid4
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from kusanagi_nerv.db.models import AttemptRow, JobRow
+from kusanagi_nerv.db.models import AttemptRow, JobRow, ModelRow
 from kusanagi_nerv.domain.execution import (
     CheckpointRef,
     Claim,
@@ -380,7 +380,13 @@ class AttemptRepository(TransactionalRepository):
         async with self._transaction() as session:
             job, attempt = await self._owned(session, claim)
             now = await session.scalar(select(func.clock_timestamp()))
-            if status == ExecutionStatus.NOT_FOUND or (
+            if status == ExecutionStatus.SUCCEEDED and (
+                (attempt.executor_kind == "ray-training-v1")
+                != isinstance(result, TrainingExecutionResult)
+            ):
+                # Preserve the fenced attempt until a compatible result arrives.
+                status = ExecutionStatus.UNKNOWN
+            elif status == ExecutionStatus.NOT_FOUND or (
                 status == ExecutionStatus.REJECTED and attempt.accepted_at is not None
             ):
                 status = ExecutionStatus.UNKNOWN
@@ -460,7 +466,21 @@ class AttemptRepository(TransactionalRepository):
                 if status == ExecutionStatus.SUCCEEDED and result is not None:
                     attempt.execution_result = asdict(result)
                     if isinstance(result, TrainingExecutionResult):
+                        # The job lock and lease fence serialize success. The
+                        # registry, attempt result and API view commit together.
+                        model = ModelRow(
+                            model_id=uuid4(),
+                            tenant_id=job.tenant_id,
+                            source_job_id=job.job_id,
+                            version="v1",
+                            artifact_uri=result.artifact_uri,
+                            artifact_sha256=result.checksum,
+                            created_at=now,
+                        )
+                        session.add(model)
                         job.artifact_uri = result.artifact_uri
+                        job.result_model_id = model.model_id
+                        job.result_model_version = model.version
             if previous != (
                 job.status,
                 job.waiting_reason,

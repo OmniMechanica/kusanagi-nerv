@@ -2,7 +2,6 @@
 
 import argparse
 import asyncio
-import json
 import logging
 import signal
 from pathlib import Path
@@ -29,11 +28,8 @@ async def serve(args: argparse.Namespace) -> None:
         if args.executor in {"ray", "ray-training"}:
             if args.ray_info_file is None:
                 raise ValueError("--ray-info-file is required with a Ray executor")
-            info = json.loads(args.ray_info_file.read_text())
-            ray_settings = RayJobsSettings(
-                address=info["address"],
-                cluster_id=info["cluster_id"],
-                token=Path(info["token_file"]).read_text().strip(),
+            ray_settings = RayJobsSettings.from_info_file(
+                args.ray_info_file,
                 timeout_seconds=min(args.executor_timeout_seconds, 3),
             )
             if args.executor == "ray-training":

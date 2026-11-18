@@ -6,7 +6,7 @@
 **Product:** Custom Self-Service Serverless ML Training & Inference Platform  
 **Purpose:** Target a 14-day CPU MVP + 7-day GPU/system-design preparation and optional production hardening for a Senior AI Platform Engineer interview.  
 **Window:** 9–29 November 2026 (target learning slices; replan scope/dates against available hours).  
-**Status:** MLP-001–009 are integrated into main through merged PRs, with learning checkpoints pending. MLP-010 is In review with real CPU worker-failure recovery from S3. MLP-011 onward remain Planned. The suite includes PostgreSQL, Ray Core, Ray Jobs, PyTorch CPU, Ray Train DDP and S3 recovery checks. See [progress](03-planning/progress.md) for recorded results.
+**Status:** MLP-001–010 are integrated into main through merged PRs, with learning checkpoints pending. MLP-011 and MLP-013 are in local review with an end-to-end CPU test of training, checkpoint recovery and prediction. See [progress](03-planning/progress.md) for recorded results.
 
 ## Start here
 

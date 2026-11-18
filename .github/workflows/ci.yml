@@ -77,7 +77,7 @@ jobs:
       - name: Install locked dependencies and package
         run: uv sync --locked
       - name: Verify migrations, persistence and concurrent writes
-        run: uv run --locked pytest -q tests/integration -m 'not ray_jobs and not recovery'
+        run: uv run --locked pytest -q tests/integration -m 'not ray_jobs and not recovery and not serving'
 
   ray:
     name: Ray Core CPU
@@ -199,12 +199,14 @@ jobs:
         with:
           version: "0.13.7"
           enable-cache: true
-      - name: Install the pinned Python and recovery dependencies
-        run: uv python install && uv sync --locked --extra recovery
+      - name: Install the pinned Python, recovery and serving dependencies
+        run: uv python install && uv sync --locked --extra recovery --extra serving
       - name: Start the S3-compatible store
         run: docker compose up -d --wait s3
       - name: Recover from worker death using a persisted checkpoint
-        run: uv run --locked --extra recovery pytest -q tests/integration -m recovery
+        run: uv run --locked --extra recovery --extra serving pytest -q tests/integration -m '(recovery or serving) and not e2e'
+      - name: Verify public CPU training, checkpoint recovery and prediction
+        run: uv run --locked --extra recovery --extra serving pytest -q -s tests/integration/test_cpu_pipeline.py
       - name: Stop the S3 test service
         if: always()
         run: docker compose down --volumes

@@ -6,6 +6,7 @@ import re
 import shlex
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx2
@@ -58,6 +59,18 @@ class RayJobsSettings:
     @property
     def target(self) -> str:
         return f"{self.address}#{self.cluster_id}"
+
+    @classmethod
+    def from_info_file(
+        cls, path: Path, *, timeout_seconds: float = 3
+    ) -> "RayJobsSettings":
+        info = json.loads(path.read_text())
+        return cls(
+            address=info["address"],
+            cluster_id=info["cluster_id"],
+            token=Path(info["token_file"]).read_text().strip(),
+            timeout_seconds=timeout_seconds,
+        )
 
 
 def workload_steps(record: DispatchRecord) -> int:

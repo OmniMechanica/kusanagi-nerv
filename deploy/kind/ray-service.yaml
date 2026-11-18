@@ -1,0 +1,84 @@
+apiVersion: ray.io/v1
+kind: RayService
+metadata:
+  name: cpu-predictor
+spec:
+  serveConfigV2: |
+    proxy_location: EveryNode
+    http_options:
+      host: 0.0.0.0
+      port: 8000
+    applications:
+      - name: cpu-predictor
+        import_path: predictor:application
+        route_prefix: /
+        deployments:
+          - name: Predictor
+            num_replicas: 1
+            ray_actor_options:
+              num_cpus: 1
+  rayClusterConfig:
+    rayVersion: "2.60.0"
+    enableInTreeAutoscaling: false
+    headGroupSpec:
+      serviceType: ClusterIP
+      rayStartParams:
+        num-cpus: "0"
+        dashboard-host: "0.0.0.0"
+        object-store-memory: "157286400"
+      template:
+        spec:
+          serviceAccountName: ray-workload
+          containers:
+            - name: ray-head
+              image: rayproject/ray:2.60.0-py312-cpu@sha256:307d271427cbca373affad1c1d406776acd5f5a5dd041523008c8d44a796e4fd
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: PYTHONPATH
+                  value: /opt/kusanagi/workloads
+              resources:
+                requests: {cpu: 250m, memory: 768Mi}
+                limits: {cpu: "1", memory: 1536Mi}
+              volumeMounts:
+                - name: dshm
+                  mountPath: /dev/shm
+                - name: workloads
+                  mountPath: /opt/kusanagi/workloads
+                  readOnly: true
+          volumes:
+            - name: dshm
+              emptyDir: {medium: Memory, sizeLimit: 256Mi}
+            - name: workloads
+              configMap:
+                name: cpu-workloads
+    workerGroupSpecs:
+      - groupName: cpu
+        replicas: 1
+        rayStartParams:
+          num-cpus: "1"
+          object-store-memory: "157286400"
+        template:
+          spec:
+            serviceAccountName: ray-workload
+            containers:
+              - name: ray-worker
+                image: rayproject/ray:2.60.0-py312-cpu@sha256:307d271427cbca373affad1c1d406776acd5f5a5dd041523008c8d44a796e4fd
+                imagePullPolicy: IfNotPresent
+                env:
+                  - name: PYTHONPATH
+                    value: /opt/kusanagi/workloads
+                resources:
+                  requests: {cpu: "1", memory: 768Mi}
+                  limits: {cpu: "1", memory: 1536Mi}
+                volumeMounts:
+                  - name: dshm
+                    mountPath: /dev/shm
+                  - name: workloads
+                    mountPath: /opt/kusanagi/workloads
+                    readOnly: true
+            volumes:
+              - name: dshm
+                emptyDir: {medium: Memory, sizeLimit: 256Mi}
+              - name: workloads
+                configMap:
+                  name: cpu-workloads

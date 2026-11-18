@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kusanagi_nerv.domain.job_lifecycle import JobStatus
 from kusanagi_nerv.domain.jobs import Job, JobResources, JobSpecification
+from kusanagi_nerv.domain.models import DeployState, Model
 
 type Identifier = Annotated[
     str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -121,12 +122,45 @@ class ValidationIssue(BaseModel):
     message: str
 
 
+class ModelView(BaseModel):
+    model_id: UUID
+    version: str
+    artifact_uri: str
+    artifact_sha256: str
+    deploy_state: DeployState
+    deployment_identity: str
+    deploy_error: str | None
+
+    @classmethod
+    def from_model(cls, model: Model) -> Self:
+        return cls(
+            model_id=model.model_id,
+            version=model.version,
+            artifact_uri=model.artifact_uri,
+            artifact_sha256=model.artifact_sha256,
+            deploy_state=model.deploy_state,
+            deployment_identity=model.deployment_identity,
+            deploy_error=model.deploy_error,
+        )
+
+
+class PredictionView(BaseModel):
+    model_id: UUID
+    version: str
+    predictions: list[float]
+
+
 class ApiError(BaseModel):
     code: Literal[
         "validation_error",
         "job_not_found",
         "storage_unavailable",
         "idempotency_conflict",
+        "model_not_found",
+        "invalid_artifact",
+        "artifact_unavailable",
+        "model_not_ready",
+        "serving_unavailable",
     ]
     message: str
     details: list[ValidationIssue] = Field(default_factory=list)

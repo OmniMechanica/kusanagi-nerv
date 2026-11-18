@@ -56,6 +56,12 @@ Regressions also cover short S3 response bodies, checkpoint searches that span
 multiple controller polls, deleted inherited checkpoints, and the public
 checkpoint URI after recovery falls back to an earlier epoch.
 
+MLP-013 marks the two [full CPU pipeline cases](cpu-pipeline.md) with `e2e`.
+CI runs them with the recovery and serving extras. The tests start their own
+Ray clusters and prove admission and API restart before checking the ordinary
+and forced worker-loss executions through public prediction. Ray start records
+prove two-worker execution even if a polling client misses `running`.
+
 ## Non-flaky testing principles
 
 MLP-005 adds [policy races](../../tests/integration/test_job_policies.py): separate

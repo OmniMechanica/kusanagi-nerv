@@ -1,7 +1,7 @@
 # Progress tracker and evidence journal
 
-**Last updated:** 2026-11-12  
-**Status:** MLP-001–004 are integrated into main through merged PRs; learning checkpoints remain pending. MLP-005 is In review with durable idempotency, bounded retries and confirmed cancellation in the simulator. MLP-006 onward remain Planned.
+**Last updated:** 2026-11-18\
+**Status:** MLP-001–010 are integrated into main. MLP-011, MLP-013 and MLP-015–016 are in local review. Learning checkpoints remain pending.
 
 ## Checkpoint gates
 
@@ -25,13 +25,13 @@ Gate D can proceed without full Gate C. Record deferred P1 work explicitly and l
 | 07 | MLP-007 | Planned | — | — |
 | 08 | MLP-008 | Planned | — | — |
 | 09 | MLP-009 | Planned | — | — |
-| 10 | MLP-010 | Planned | — | — |
-| 11 | MLP-011 | Planned | — | — |
+| 10 | MLP-010 | In review | [Merged PR #13](https://github.com/OmniMechanica/kusanagi-nerv/pull/13) | Complete the checkpoint learning drill |
+| 11 | MLP-011 | In review | [Model serving evidence](#2026-11-18--mlp-011--model-serving) | Review the increment and complete the learning drill |
 | 12 | MLP-012 | Planned | — | — |
-| 13 | MLP-013 | Planned | — | — |
-| 14 | MLP-014 | Planned | — | — |
-| 15 | MLP-015 | Planned | — | — |
-| 16 | MLP-016 | Planned | — | — |
+| 13 | MLP-013 | In review | [Public CPU pipeline](#2026-11-18--mlp-013--public-cpu-pipeline) | Review the E2E cases and complete the architecture drill |
+| 14 | MLP-014 | In progress | [Coding and system design exercises](tasks/MLP-014.md), [CPU demo evidence](#2026-11-18--mlp-013--public-cpu-pipeline) | First coding pass and scored mock pending |
+| 15 | MLP-015 | In review | [CPU batch and serving on kind](#2026-11-18--mlp-015--cpu-batch-and-serving-on-kind) | Review the manifests and explain the failure domains |
+| 16 | MLP-016 | In review | [GPU resource contract](#2026-11-18--mlp-016--gpu-resource-contract) | Review capacity and topology tradeoffs |
 | 17 | MLP-017 | Planned | — | — |
 | 18 | MLP-018 | Planned | — | — |
 | 19 | MLP-019 | Planned | — | — |
@@ -233,7 +233,7 @@ Gate D can proceed without full Gate C. Record deferred P1 work explicitly and l
 
 ## 2026-11-17 — MLP-010 — Controller-owned S3 checkpoint recovery
 
-- Status: In review. [PR #12](https://github.com/OmniMechanica/kusanagi-nerv/pull/12) merged MLP-009 during implementation as `e79b07c`. The recovery branch targets main at that merge. The learner explanation remains pending.
+- Status: [PR #13](https://github.com/OmniMechanica/kusanagi-nerv/pull/13) merged as `5dfcee7`. The learning drill remains pending.
 - Evidence: **TESTED-CPU** on macOS arm64 with Python 3.12.16, Ray 2.60.0, PyTorch 2.15.0, PostgreSQL 18.6 and SeaweedFS 4.53 using its S3 API. Public MinIO image pulls were denied. Compose pins the accessible S3 server by digest and binds loopback. The recovery extra adds Boto3 1.44.5 and resolves `python-dateutil` to 2.9.0.post0 for Botocore compatibility.
 - Real fault boundary: Ray Jobs launched two DDP workers. Rank zero published the complete checkpoint at epoch 2 and then received SIGKILL. Ray returned a typed actor death inside a worker health-check error, and the entrypoint exited with code 75. Worker, preemption and Train-controller retry budgets remain zero.
 - Resume proof: a new Python process loaded the S3 object and reported epoch 2, two epoch records and Adam step 12. The controller created a distinct submission and attempt ID, with the old URI, SHA-256 and epoch durably stored before dispatch. Attempt 2 first ran epoch 3, published checkpoints through epoch 5, and wrote the final model under its own S3 prefix. Its predictions matched the equivalent uninterrupted batch-64 training within tolerance. The first two metric records match the original checkpoint's history.
@@ -244,6 +244,58 @@ Gate D can proceed without full Gate C. Record deferred P1 work explicitly and l
 - Review follow-up persists `retry_checkpoint` independently of publication and restore inputs. A second worker loss before publishing can reuse the verified checkpoint from attempt one. Cancellation uses verified Ray Jobs status to send `stop` during an S3 outage, and success requires matching hashes for the downloaded artifact and final checkpoint. Recovery skips candidates with invalid integrity metadata or bytes. The PostgreSQL migration test confirms that a retry pending on schema `0005_training_checkpoints` retains its selected checkpoint after upgrade to `0006_retry_checkpoint`.
 - The independent review follow-up keeps interrupted S3 downloads in `UNKNOWN` and treats `NoSuchKey` as confirmed absence. After a completed recovery search the same ledger transaction updates the public checkpoint URI to the verified candidate or clears it. The upgrade runbook stops all old controllers before the `0006` backfill.
 - Bounded S3 reads now verify completeness before hash comparison. The adapter reuses one read-only terminal check per observed submission across poll timeouts and discards obsolete checks when moving to another submission or cancelling a failed job.
-- Runbook and proof query: [Checkpoint recovery](../06-engineering/checkpoint-recovery.md). The next increment is MLP-011 model registration, deployment and inference, after review and the checkpoint learning drill.
+- Runbook, ledger query and learning drill: [Checkpoint recovery](../06-engineering/checkpoint-recovery.md).
+
+## 2026-11-18 — MLP-011 — Model serving
+
+- `0007_model_registry` adds durable model IDs, versions and SHA-256 references to verified inference artifacts. A fenced training completion registers one model and publishes it in the existing job response in a single transaction.
+- PostgreSQL tests exercise rollback on an invalid digest, competing completion observations, and backfill from a terminal MLP-010 attempt. The Ray/S3 recovery cases check that the job response exposes the registered model with the exact artifact URI and checksum.
+- Local checks passed: 252 fast, 68 PostgreSQL, 5 Ray Jobs and 11 S3 recovery cases. The real Ray Jobs checks preserve the dummy workload result across controller restart. Its job response has no model ID or version.
+- `0008_model_deployments` persists deploy requests and the latest observed Serve state. The tenant-scoped API checks S3 bytes and model format. The deployment controller uses a stable application name and verifies its revision before recording readiness.
+- **TESTED-CPU** on macOS with Ray 2.60, PostgreSQL and SeaweedFS. The controller exited after Ray accepted the deployment. A new controller recorded the same application as ready and its HTTP proxy responded from the loaded replica. A corrupt weights artifact with a valid SHA-256 returned `409`.
+- Deployment verification passed 252 fast, 69 PostgreSQL, 5 Ray Jobs, 11 S3 recovery, 4 CPU training and 1 real Ray Serve case. Ruff, schema comparison, the dependency lock and package build passed.
+- The serving-only environment avoids a macOS Ray dashboard subprocess abort when importing PyArrow from the training environment. See [model deployment](../06-engineering/model-deployment.md).
+- **TESTED-CPU inference.** A public job request ran a real two-worker DDP training job and registered model `d2e57701-e5f6-470c-9836-98dccf6a9070` at version `v1`. Public deploy, readiness polling and prediction produced HTTP `200` and two values matching local inference on the exact saved S3 artifact.
+- The prediction contract checks tenant ownership, readiness, bounded four-feature input, replica identity and response shape. The real Serve test compares concurrent predictions with local inference after restarting the deployment controller and the Serve service. The interview drill remains open in [MLP-011](tasks/MLP-011.md).
+- The inference regression runs passed 342 tests across the fast, PostgreSQL, Ray Jobs, S3 recovery, CPU training and Ray Serve groups. The full DDP-to-prediction experiment ran separately.
+- Astra review follow-up preserves confirmed readiness after an unrelated failed Serve PUT and commits `failed` before removing a revision. The regression simulates interruption after Ray accepts the removal and confirms that only an explicit deploy request starts a new revision. The real Serve test covers a truncated artifact returning `409` and finite predictions at the float32 input boundary.
+
+## 2026-11-18 — MLP-013 — Public CPU pipeline
+
+- **TESTED-CPU** on macOS with Ray 2.60, PyTorch 2.15, PostgreSQL 18.6 and SeaweedFS 4.53. `KUSANAGI_DOCKER_CONTEXT=desktop-linux UV_OFFLINE=1 scripts/test-cpu-pipeline.sh --tb=short` passed both scenarios in 133.24 seconds of pytest runtime. The [runbook](../06-engineering/cpu-pipeline.md) describes the environments, output records and cleanup.
+- The ordinary job `142387db-2b33-479b-89d5-ddb2f763f297` completed on one Ray submission and served model `38fe43e9-afa7-49a3-b13c-59d08b8ee406` at version `v1`. Both scenarios obtained `202` before starting the training controller, then read the same job ID and creation timestamp from the restarted API.
+- Job `06ccf896-1f7b-4e9a-ac9d-b8f65fb918f8` lost its rank-zero worker after epoch 2. Ray reported driver exit code 75 for `kusanagi-cfbc01d6-97ef-4b5e-bf96-2e397ded2e82`. Retry `kusanagi-c331c804-7031-48fb-8e8e-e0a76a4ddfb5` used the exact checkpoint reference, restored Adam step 12 and started epoch 3. A fresh Python process verified the checkpoint.
+- The recovered job registered model `0afe2867-b2f5-4501-b80d-2e1ae8bf16df` at version `v1`. Both models returned HTTP `200` through the public prediction route with `[0.040756889, -0.178886503, 0.012715655, -0.036401346]` (rounded). The tests compared the values with the exact registered weights and the uninterrupted CPU reference.
+
+The worker-loss record printed these S3 objects. The test removed its job prefix during cleanup.
+
+```text
+checkpoint s3://kusanagi-training/jobs/06ccf896-1f7b-4e9a-ac9d-b8f65fb918f8/attempts/kusanagi-cfbc01d6-97ef-4b5e-bf96-2e397ded2e82/checkpoints/0002.pt
+artifact   s3://kusanagi-training/jobs/06ccf896-1f7b-4e9a-ac9d-b8f65fb918f8/attempts/kusanagi-c331c804-7031-48fb-8e8e-e0a76a4ddfb5/model.pt
+```
+
+## 2026-11-18 — MLP-015 — CPU batch and serving on kind
+
+- **TESTED-CPU** on Docker Desktop Linux ARM64 with 4 CPUs and 8 GB memory. The complete run took 2 minutes 24 seconds including cluster creation and teardown. The script used kind 0.31.0, Kubernetes and kubectl 1.35.0, Helm 3.18.3, KubeRay 1.6.2 and the Ray 2.60.0 Python 3.12 CPU image. [Script](../../scripts/test-kuberay-kind.sh) · [Runbook](../06-engineering/kuberay-kind.md).
+- Strict server-side dry-run accepted the ServiceAccount, generated ConfigMap, RayCluster, RayJob and RayService. Both Ray clusters reached one ready worker each. The RayJob's Kubernetes submitter Pod completed and the operator reported `SUCCEEDED` / `Complete`. RayService reached `Ready` with two Serve endpoints.
+- The driver ran on `cpu-batch-head-c7cvv` and both tasks ran on `cpu-batch-cpu-worker-gzn44`. The Serve ClusterIP endpoint `cpu-predictor-serve-svc:8000/predict` returned HTTP `200` from `cpu-predictor-pd8ds-cpu-worker-4pcd5`. Both paths reported model `linear-cpu-v1` and predictions `[1.0, 3.0]`.
+- Live validation exposed three configuration limits. The initial head requests of 500m left insufficient allocatable CPU for the second worker after system reservations. The operator required the `ray.io/cluster` key even though the CRD accepted a different map key. The injected Serve worker readiness probe needed a local proxy, so the demo uses `EveryNode`. The smoke client makes the internal HTTP request using the Python standard library available in the image.
+- Local checks passed for 252 fast tests, Ruff lint and formatting, Bash syntax and runbook links. The demo uses fixed weights. The full platform's Kubernetes targets, artifact access identity and ownership boundaries are **DESIGN-ONLY**. The independent MLP-014 mock is in progress.
+
+## 2026-11-18 — MLP-016 — GPU resource contract
+
+- **DESIGN-ONLY** for NVIDIA device injection, CUDA, NCCL and GPU performance. The [GPU RayJob](../../deploy/gpu/ray-job.yaml) and [architecture](../02-architecture/gpu-kubernetes.md) specify one exclusive device per worker, a CPU head and a device-visibility probe. The pinned Ray 2.60.0 Python 3.12 CUDA image index contains Linux AMD64 and ARM64 manifests.
+- **TESTED-CPU** for Kubernetes validation and zero-capacity scheduling on kind 0.31.0, Kubernetes 1.35.0 and KubeRay 1.6.2. `kubectl apply --dry-run=server --validate=strict -k deploy/gpu` accepted the ServiceAccount, generated ConfigMap and RayJob.
+- A native Pod rendered from the GPU worker template passed strict server-side dry-run with one GPU in requests and limits. Setting its test copy to request one and limit two was rejected with `must be equal to nvidia.com/gpu limit of 2`.
+- The disposable node had the required pool label and zero allocatable GPUs. Applying the unchanged worker Pod template produced `Pending` and the scheduler event `0/1 nodes are available: 1 Insufficient nvidia.com/gpu`. Only the native Pod was applied for this check.
+- The design covers quota holds, bounded backfill, same-node placement, independent scaling loops and separate attribution of allocated GPU-hours and utilization. Live training and GPU measurement belong to [MLP-022](tasks/MLP-022.md).
+
+## 2026-11-18 — Astra review follow-up for MLP-011 and MLP-013–016
+
+- The deployment reconciler checks the effective Serve proxy configuration. A confirmed listener mismatch moves a ready model to `deploying`. Artifact admission and replica initialization reject weights containing NaN or Inf.
+- A training success observation without the typed result leaves the attempt recoverable. Migration `0009_job_model_result` repairs legacy result links and enforces a match on the model ID, source job, tenant and version. PostgreSQL tests cover old-schema repair, a competing completion and invalid links at commit.
+- The CPU runner discovers the published PostgreSQL and S3 ports unless explicit URLs are configured. The live test used custom ports supplied through a Compose environment file. Both public CPU cases returned HTTP `200`. The interrupted case restored Adam step 12 and resumed at epoch 3.
+- The live kind smoke test returned `[1.0, 3.0]` for the baseline and HTTP `422` for an overflowing finite batch. The GPU probe now requires exactly one device enumerated by the CUDA driver. Five simulated driver cases covered zero and multiple devices, initialization and enumeration failures, and the successful result. Physical GPU execution remains **DESIGN-ONLY**.
+- Verification passed 252 fast tests, 32 CPU E2E and PostgreSQL integration cases, and the separate live Serve test with both nonfinite artifacts. The database checks included Alembic schema comparison.
 
 The [backlog CSV](backlog.csv) also tracks ticket statuses and dependencies. Keep both consistent as tasks complete.

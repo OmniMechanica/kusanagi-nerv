@@ -50,6 +50,12 @@ def ray_info_file(tmp_path_factory):
         yield Path(configured)
         return
     path = tmp_path_factory.mktemp("ray-jobs") / "cluster.json"
+    with owned_ray_cluster(path) as info:
+        yield info
+
+
+@contextmanager
+def owned_ray_cluster(path, *, python: str = sys.executable):
     with tempfile.TemporaryFile(mode="w+") as log:
         env = {
             key: value
@@ -58,7 +64,7 @@ def ray_info_file(tmp_path_factory):
         }
         process = subprocess.Popen(
             [
-                sys.executable,
+                python,
                 "-m",
                 "kusanagi_nerv.runtime.local",
                 "--info-file",
@@ -96,7 +102,14 @@ def stop(process):
 
 
 @contextmanager
-def controller_process(database_url, ray_info_file, *, crash_after_submit=False):
+def controller_process(
+    database_url,
+    ray_info_file,
+    *,
+    crash_after_submit=False,
+    executor="ray",
+    kill_after_epoch=None,
+):
     command = [sys.executable, "-m", "kusanagi_nerv.controller"]
     if crash_after_submit:
         # Test-only deterministic crash, after remote acceptance and before the
@@ -114,7 +127,7 @@ main()
         command = [sys.executable, "-c", script]
     command += [
         "--executor",
-        "ray",
+        executor,
         "--ray-info-file",
         str(ray_info_file),
         "--lease-seconds",
@@ -124,6 +137,8 @@ main()
         "--executor-timeout-seconds",
         "1.5",
     ]
+    if kill_after_epoch is not None:
+        command += ["--experiment-kill-after-epoch", str(kill_after_epoch)]
     with tempfile.TemporaryFile(mode="w+") as log:
         process = subprocess.Popen(
             command,
@@ -135,6 +150,10 @@ main()
         )
         try:
             yield process
+        except (Exception, pytest.fail.Exception) as exc:
+            log.seek(0)
+            exc.add_note(log.read()[-6000:])
+            raise
         finally:
             stop(process)
 
@@ -201,6 +220,8 @@ async def test_api_controller_ray_result_survives_controller_process_crash(
                 final = await wait_status(client, location, "succeeded", process=second)
                 recovered = await attempt_row(engine)
                 assert final["attempt"] == 1
+                assert final["result_model_id"] is None
+                assert final["result_model_version"] is None
                 assert recovered["id"] == original["id"]
                 assert recovered["submission_id"] == original["submission_id"]
                 assert recovered["lease_epoch"] == original["lease_epoch"] + 1
